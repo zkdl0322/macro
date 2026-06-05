@@ -36,7 +36,8 @@ def log(text):
 app = None
 win = None
 e_id = e_pw = e_url = e_count = None
-cb_vip = cb_r = cb_s = cb_a = cb_etc = None
+cb_standing_r = cb_standing_s = None
+cb_jj_r = cb_jj_s = cb_jj_a = cb_jj_b = None
 cb_allgrade = None
 spin_interval = None
 ch = None
@@ -74,7 +75,7 @@ def on_start():
 # ────────────────────────────────────────────
 def toggle_allgrade(state):
     checked = (state == Qt.Checked)
-    for cb in [cb_vip, cb_r, cb_s, cb_a, cb_etc]:
+    for cb in [cb_standing_r, cb_standing_s, cb_jj_r, cb_jj_s, cb_jj_a, cb_jj_b]:
         cb.setChecked(checked)
 
 
@@ -83,7 +84,7 @@ def toggle_allgrade(state):
 # ────────────────────────────────────────────
 def build_gui():
     global app, win, e_id, e_pw, e_url, e_count
-    global cb_vip, cb_r, cb_s, cb_a, cb_etc, cb_allgrade
+    global cb_standing_r, cb_standing_s, cb_jj_r, cb_jj_s, cb_jj_a, cb_jj_b, cb_allgrade
     global spin_interval, ch
 
     app = QApplication(sys.argv)
@@ -120,18 +121,39 @@ def build_gui():
     # ── 좌석 등급
     grp_seat = QGroupBox("좌석 등급 (복수 선택 가능)")
     gs = QVBoxLayout()
+
     cb_allgrade = QCheckBox("전체 등급")
     cb_allgrade.stateChanged.connect(toggle_allgrade)
-    row_grade = QHBoxLayout()
-    cb_vip = QCheckBox("VIP")
-    cb_r   = QCheckBox("R")
-    cb_s   = QCheckBox("S")
-    cb_a   = QCheckBox("A")
-    cb_etc = QCheckBox("기타")
-    for cb in [cb_vip, cb_r, cb_s, cb_a, cb_etc]:
-        row_grade.addWidget(cb)
     gs.addWidget(cb_allgrade)
-    gs.addLayout(row_grade)
+
+    # 스탠딩
+    row_standing = QHBoxLayout()
+    lbl_standing = QLabel("스탠딩")
+    lbl_standing.setFixedWidth(50)
+    cb_standing_r = QCheckBox("R  (165,000원)")
+    cb_standing_s = QCheckBox("S  (154,000원)")
+    row_standing.addWidget(lbl_standing)
+    row_standing.addWidget(cb_standing_r)
+    row_standing.addWidget(cb_standing_s)
+    row_standing.addStretch()
+    gs.addLayout(row_standing)
+
+    # 지정석
+    row_jj = QHBoxLayout()
+    lbl_jj = QLabel("지정석")
+    lbl_jj.setFixedWidth(50)
+    cb_jj_r = QCheckBox("R  (165,000원)")
+    cb_jj_s = QCheckBox("S  (154,000원)")
+    cb_jj_a = QCheckBox("A  (143,000원)")
+    cb_jj_b = QCheckBox("B  (132,000원)")
+    row_jj.addWidget(lbl_jj)
+    row_jj.addWidget(cb_jj_r)
+    row_jj.addWidget(cb_jj_s)
+    row_jj.addWidget(cb_jj_a)
+    row_jj.addWidget(cb_jj_b)
+    row_jj.addStretch()
+    gs.addLayout(row_jj)
+
     grp_seat.setLayout(gs)
 
     # ── 새로고침 간격
@@ -203,34 +225,17 @@ def login(driver, user_id, user_pw):
     log("로그인 성공")
 
 
-# ────────────────────────────────────────────
-#  취소표(빈 좌석) 감지
-# ────────────────────────────────────────────
-def find_available_seat(driver, grade_check):
-    """
-    grade_check: [vip, r, s, a, etc] 각 1/0
-    반환값: 선택 가능한 좌석 요소 또는 None
-    """
-    bs = BeautifulSoup(driver.page_source, "html.parser")
-
-    # 좌석이 버튼/span으로 표시되는 경우
-    seats = bs.select("span.seat.available, button.seat:not(.disabled), "
-                      "area[class*='available'], .seat-item.on")
-
-    for seat in seats:
-        grade_text = (seat.get("title") or seat.get("alt") or seat.get_text()).upper()
-        if grade_check[0] and "VIP" in grade_text: return seat
-        if grade_check[1] and any(x in grade_text for x in ["R석","R좌"]): return seat
-        if grade_check[2] and any(x in grade_text for x in ["S석","S좌"]): return seat
-        if grade_check[3] and any(x in grade_text for x in ["A석","A좌"]): return seat
-        if grade_check[4]: return seat  # 기타
-
-    # 날짜/회차 선택 페이지에서 예매가능 버튼 탐색
-    avail_btns = bs.select("td.possible a, .schedule-item.possible, button.book-btn:not([disabled])")
-    if avail_btns:
-        return avail_btns[0]
-
-    return None
+# grade_check 인덱스
+# 0: 스탠딩R  1: 스탠딩S
+# 2: 지정석R  3: 지정석S  4: 지정석A  5: 지정석B
+GRADE_KEYWORDS = [
+    ["스탠딩R", "스탠딩 R", "STANDING R"],
+    ["스탠딩S", "스탠딩 S", "STANDING S"],
+    ["지정석R", "지정석 R"],
+    ["지정석S", "지정석 S"],
+    ["지정석A", "지정석 A"],
+    ["지정석B", "지정석 B"],
+]
 
 
 # ────────────────────────────────────────────
@@ -296,28 +301,44 @@ def book(driver, show_url, count, grade_check, interval):
             except:
                 pass
 
-            # 4) 좌석 등급 선택 (드롭다운 or 라디오)
+            # 4) 좌석 등급 선택
             try:
-                grade_names = {0: "VIP", 1: "R", 2: "S", 3: "A"}
-                for idx, flag in enumerate(grade_check[:4]):
-                    if flag:
-                        try:
-                            # 드롭다운 방식
-                            sel = Select(driver.find_element(By.CSS_SELECTOR, "select[name*='grade'], select[name*='price']"))
-                            for opt in sel.options:
-                                if grade_names.get(idx, "") in opt.text.upper():
-                                    sel.select_by_visible_text(opt.text)
-                                    break
-                        except:
-                            # 라디오/버튼 방식
+                for idx, flag in enumerate(grade_check):
+                    if not flag:
+                        continue
+                    keywords = GRADE_KEYWORDS[idx]
+                    grade_label = keywords[0]
+                    selected = False
+
+                    # 드롭다운 방식
+                    try:
+                        sel_el = driver.find_element(By.CSS_SELECTOR,
+                            "select[name*='grade'], select[name*='price'], select[name*='class']")
+                        sel = Select(sel_el)
+                        for opt in sel.options:
+                            if any(kw in opt.text for kw in keywords):
+                                sel.select_by_visible_text(opt.text)
+                                selected = True
+                                break
+                    except:
+                        pass
+
+                    # 버튼/라디오 방식
+                    if not selected:
+                        for kw in keywords:
                             btns = driver.find_elements(
                                 By.XPATH,
-                                f"//button[contains(text(),'{grade_names.get(idx,'')}')]"
-                                f"|//label[contains(text(),'{grade_names.get(idx,'')}')]"
+                                f"//button[contains(text(),'{kw}')]"
+                                f"|//label[contains(text(),'{kw}')]"
+                                f"|//td[contains(text(),'{kw}')]"
                             )
                             if btns:
                                 btns[0].click()
-                        log(f"좌석 등급 선택: {grade_names.get(idx,'기타')}")
+                                selected = True
+                                break
+
+                    if selected:
+                        log(f"좌석 등급 선택: {grade_label}")
                         break
             except:
                 pass
@@ -396,11 +417,12 @@ if __name__ == '__main__':
     count     = e_count.value()
     interval  = spin_interval.value()
     grade_check = [
-        1 if cb_vip.isChecked() else 0,
-        1 if cb_r.isChecked()   else 0,
-        1 if cb_s.isChecked()   else 0,
-        1 if cb_a.isChecked()   else 0,
-        1 if cb_etc.isChecked() else 0,
+        1 if cb_standing_r.isChecked() else 0,  # 스탠딩R
+        1 if cb_standing_s.isChecked() else 0,  # 스탠딩S
+        1 if cb_jj_r.isChecked()       else 0,  # 지정석R
+        1 if cb_jj_s.isChecked()       else 0,  # 지정석S
+        1 if cb_jj_a.isChecked()       else 0,  # 지정석A
+        1 if cb_jj_b.isChecked()       else 0,  # 지정석B
     ]
 
     if not any(grade_check):
