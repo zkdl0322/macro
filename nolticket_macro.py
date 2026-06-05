@@ -218,15 +218,39 @@ def login(driver):
 
     # 사용자가 카카오 로그인 완료할 때까지 대기 (최대 3분)
     print("\n>>> 브라우저에서 카카오 로그인을 완료하면 자동으로 진행됩니다 <<<\n")
+    original_window = driver.current_window_handle
+
     for _ in range(180):
         time.sleep(1)
-        if "login" not in driver.current_url and "member" not in driver.current_url:
-            break
-        # 로그인 완료 감지 (마이페이지 or 메인으로 이동)
-        if any(k in driver.current_url for k in ["mypage", "main", "index", "nolticket.com/goods"]):
-            break
+
+        # 팝업창 닫힌 후 메인 창으로 복귀
+        try:
+            handles = driver.window_handles
+            if original_window in handles:
+                driver.switch_to.window(original_window)
+            elif handles:
+                driver.switch_to.window(handles[0])
+        except:
+            pass
+
+        # 로그인 완료 감지
+        try:
+            cur = driver.current_url
+            if "login" not in cur and "member" not in cur:
+                break
+            if any(k in cur for k in ["mypage", "main", "index", "nolticket"]):
+                if "login" not in cur:
+                    break
+        except:
+            pass
     else:
         raise Exception("카카오 로그인 시간 초과 (3분)")
+
+    # 최종적으로 메인 창 확보
+    try:
+        driver.switch_to.window(driver.window_handles[0])
+    except:
+        pass
 
     log("카카오 로그인 성공")
 
