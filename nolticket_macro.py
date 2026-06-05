@@ -35,7 +35,7 @@ def log(text):
 # ────────────────────────────────────────────
 app = None
 win = None
-e_id = e_pw = e_url = e_count = None
+e_url = e_count = None
 cb_standing_r = cb_standing_s = None
 cb_jj_r = cb_jj_s = cb_jj_a = cb_jj_b = None
 cb_allgrade = None
@@ -57,12 +57,6 @@ def esc(event):
 #  유효성 검사 후 창 닫기
 # ────────────────────────────────────────────
 def on_start():
-    if not e_id.text().strip():
-        QMessageBox.warning(win, "오류", "아이디를 입력하세요.")
-        return
-    if not e_pw.text().strip():
-        QMessageBox.warning(win, "오류", "비밀번호를 입력하세요.")
-        return
     if not e_url.text().strip():
         QMessageBox.warning(win, "오류", "공연 URL을 입력하세요.")
         return
@@ -83,7 +77,7 @@ def toggle_allgrade(state):
 #  GUI 구성
 # ────────────────────────────────────────────
 def build_gui():
-    global app, win, e_id, e_pw, e_url, e_count
+    global app, win, e_url, e_count
     global cb_standing_r, cb_standing_s, cb_jj_r, cb_jj_s, cb_jj_a, cb_jj_b, cb_allgrade
     global spin_interval, ch
 
@@ -94,16 +88,12 @@ def build_gui():
     win.setFont(QFont("맑은 고딕", 10))
     win.keyPressEvent = esc
 
-    # ── 로그인 정보
-    grp_login = QGroupBox("로그인 정보")
-    g1 = QFormLayout()
-    e_id = QLineEdit()
-    e_id.setPlaceholderText("놀티켓 아이디")
-    e_pw = QLineEdit()
-    e_pw.setEchoMode(QLineEdit.Password)
-    e_pw.setPlaceholderText("비밀번호")
-    g1.addRow("아이디", e_id)
-    g1.addRow("비밀번호", e_pw)
+    # ── 로그인 안내
+    grp_login = QGroupBox("로그인")
+    g1 = QVBoxLayout()
+    lbl_kakao = QLabel("※ 프로그램 시작 후 열리는 브라우저에서\n   카카오 로그인을 직접 진행해 주세요.")
+    lbl_kakao.setStyleSheet("color:#555; font-size:10px;")
+    g1.addWidget(lbl_kakao)
     grp_login.setLayout(g1)
 
     # ── 공연 정보
@@ -160,9 +150,9 @@ def build_gui():
     grp_opt = QGroupBox("옵션")
     go = QFormLayout()
     spin_interval = QDoubleSpinBox()
-    spin_interval.setRange(0.3, 10.0)
-    spin_interval.setSingleStep(0.1)
-    spin_interval.setValue(0.5)
+    spin_interval.setRange(5.0, 300.0)
+    spin_interval.setSingleStep(5.0)
+    spin_interval.setValue(30.0)
     spin_interval.setSuffix(" 초")
     go.addRow("새로고침 간격", spin_interval)
     grp_opt.setLayout(go)
@@ -208,21 +198,37 @@ def make_driver():
 
 
 # ────────────────────────────────────────────
-#  놀티켓 로그인
+#  놀티켓 카카오 로그인
 # ────────────────────────────────────────────
-def login(driver, user_id, user_pw):
+def login(driver):
     driver.get("https://www.nolticket.com/member/login")
     wait = WebDriverWait(driver, 15)
 
-    wait.until(EC.presence_of_element_located((By.NAME, "m_id")))
-    driver.find_element(By.NAME, "m_id").send_keys(user_id)
-    driver.find_element(By.NAME, "m_pw").send_keys(user_pw)
-    driver.find_element(By.CSS_SELECTOR, "button[type='submit'], input[type='submit']").click()
+    # 카카오 로그인 버튼 클릭
+    try:
+        kakao_btn = wait.until(EC.element_to_be_clickable((
+            By.CSS_SELECTOR,
+            "a.kakao, a[href*='kakao'], button.kakao, img[alt*='카카오'], "
+            "a[class*='kakao'], .sns-kakao, a[href*='SNS=K']"
+        )))
+        kakao_btn.click()
+        log("카카오 로그인 버튼 클릭 - 브라우저에서 로그인 진행하세요")
+    except Exception:
+        log("카카오 버튼 자동 클릭 실패 - 브라우저에서 직접 카카오 로그인 해주세요")
 
-    time.sleep(2)
-    if "login" in driver.current_url:
-        raise Exception("로그인 실패 - 아이디/비밀번호를 확인하세요.")
-    log("로그인 성공")
+    # 사용자가 카카오 로그인 완료할 때까지 대기 (최대 3분)
+    print("\n>>> 브라우저에서 카카오 로그인을 완료하면 자동으로 진행됩니다 <<<\n")
+    for _ in range(180):
+        time.sleep(1)
+        if "login" not in driver.current_url and "member" not in driver.current_url:
+            break
+        # 로그인 완료 감지 (마이페이지 or 메인으로 이동)
+        if any(k in driver.current_url for k in ["mypage", "main", "index", "nolticket.com/goods"]):
+            break
+    else:
+        raise Exception("카카오 로그인 시간 초과 (3분)")
+
+    log("카카오 로그인 성공")
 
 
 # grade_check 인덱스
@@ -411,8 +417,6 @@ if __name__ == '__main__':
         sys.exit()
 
     # 입력값 수집
-    user_id   = e_id.text().strip()
-    user_pw   = e_pw.text().strip()
     show_url  = e_url.text().strip()
     count     = e_count.value()
     interval  = spin_interval.value()
@@ -433,7 +437,7 @@ if __name__ == '__main__':
     driver = None
     try:
         driver = make_driver()
-        login(driver, user_id, user_pw)
+        login(driver)
         book(driver, show_url, count, grade_check, interval)
 
     except Exception as ex:
