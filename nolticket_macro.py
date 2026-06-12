@@ -68,15 +68,28 @@ class MacroThread(QThread):
                 self._wait(1)
                 try:
                     cur = self.driver.current_url
-                    # NOL 인터파크 로그인 완료 감지
-                    if "login" not in cur and "accounts" not in cur:
-                        self.log("로그인 감지 완료")
+                    if "accounts" not in cur and "login" not in cur and "nol.interpark" in cur:
                         break
                 except:
                     pass
             else:
                 self.log("로그인 대기 시간 초과")
                 return
+
+            self.log("→ 로그인 완료")
+            self.log("원하는 링크에 들어가서 [예매하기] 버튼을 눌러 주세요.")
+
+            # 예매하기 버튼 클릭 감지 대기 (최대 30분)
+            for _ in range(1800):
+                self._wait(1)
+                try:
+                    cur = self.driver.current_url
+                    # 예매 페이지로 넘어갔는지 감지
+                    if "Book" in cur or "book" in cur or "interpark.com/ticket" in cur:
+                        self.log("예매 페이지 감지")
+                        break
+                except:
+                    pass
 
             # TODO: 다음 단계 추가 예정
 
