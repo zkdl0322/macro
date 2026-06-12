@@ -75,6 +75,49 @@ class MacroThread(QThread):
                 if self._stop: raise InterruptedError
             time.sleep(0.05)
 
+    # ── 사용자 입력 대기 (보안문자/등급선택 공용)
+    def _ask_user(self, timeout=120):
+        self._captcha_event.clear()
+        self.sig.captcha_signal.emit()
+        if not self._captcha_event.wait(timeout=timeout):
+            return None
+        answer = self._captcha_answer
+        self.sig.input_hide.emit()
+        return answer
+
+    # ── 좌석 등급 선택
+    def _ask_seat_grade(self):
+        GRADES = [
+            "스탠딩R",
+            "스탠딩S",
+            "지정석R",
+            "지정석S",
+            "지정석A",
+            "지정석B",
+        ]
+        self.log("좌석 등급을 입력해주세요:")
+        self.log("1. 모두")
+        for i, g in enumerate(GRADES, start=2):
+            self.log(f"{i}. {g}")
+
+        answer = self._ask_user(timeout=120)
+        if answer is None:
+            self.log("입력 시간 초과 - 모두로 진행")
+            return 0
+        try:
+            sel = int(answer)
+        except:
+            sel = 1
+
+        self.log(f"→ {answer}")
+
+        if sel == 1:
+            return 0              # 0 = 모두
+        elif 2 <= sel <= len(GRADES) + 1:
+            return sel - 2        # GRADES 인덱스
+        else:
+            return 0
+
     # ── 보안문자 처리
     def _handle_captcha(self):
         driver = self.driver
@@ -111,18 +154,9 @@ class MacroThread(QThread):
             self.log("보안 문자를 입력해주세요. 입력 후, 0을 입력해주세요 →")
             driver.switch_to.default_content()
 
-            self._captcha_event.clear()
-            self.sig.captcha_signal.emit()
-
-            # 최대 60초 대기
-            if not self._captcha_event.wait(timeout=60):
-                self.log("보안문자 입력 시간 초과")
-                return False
-
-            answer = self._captcha_answer
-            self.sig.input_hide.emit()
-
+            answer = self._ask_user(timeout=60)
             if not answer:
+                self.log("보안문자 입력 시간 초과")
                 return False
 
             self.log(f"→ {answer}")
@@ -163,7 +197,6 @@ class MacroThread(QThread):
                     pass
                 driver.switch_to.default_content()
                 self._wait(0.5)
-                self.sig.captcha_signal.emit()
                 continue
             else:
                 self.log("→ 보안문자 통과")
@@ -210,7 +243,12 @@ class MacroThread(QThread):
             # 보안문자 처리
             self._handle_captcha()
 
-            # TODO: 다음 단계 추가 예정
+            self._wait(0.5)
+
+            # 좌석 등급 선택
+            grade_idx = self._ask_seat_grade()   # 0=모두, 1~6=특정등급
+
+            # TODO: 다음 단계(구역 순회 좌석 선택) 추가 예정
 
         except InterruptedError:
             self.log("매크로 중단됨")
