@@ -13,6 +13,7 @@ import time
 import traceback
 import re
 import threading
+import winsound
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -485,6 +486,22 @@ class MacroThread(QThread):
     # ─────────────────────────────────
     #  좌석선택완료 → 가격선택 → 다음단계
     # ─────────────────────────────────
+    # ─────────────────────────────────
+    #  소리 알림
+    # ─────────────────────────────────
+    def _alert_sound(self):
+        """결제 대기 페이지 도달 시 반복 알림음"""
+        def _beep():
+            for _ in range(5):
+                try:
+                    winsound.Beep(1000, 400)
+                    time.sleep(0.15)
+                    winsound.Beep(1200, 400)
+                    time.sleep(0.15)
+                except:
+                    break
+        threading.Thread(target=_beep, daemon=True).start()
+
     def _complete_booking(self):
         self.log("좌석선택완료 클릭")
         driver = self.driver
@@ -615,6 +632,7 @@ class MacroThread(QThread):
                     cur = driver.current_url
                     if any(k in cur for k in ["payment", "pay", "order", "checkout", "BookEnd"]):
                         self.log("✅ 예매 성공! 결제 페이지 도달")
+                        self._alert_sound()
                         self.sig.success_signal.emit("✅ 취소표 예매 성공!\n브라우저에서 결제를 완료해 주세요.")
                     else:
                         self.log(f"현재 URL: {cur}")
