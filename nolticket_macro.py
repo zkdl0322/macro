@@ -125,6 +125,8 @@ class MacroThread(QThread):
             if not answer:
                 return False
 
+            self.log(f"→ {answer}")
+
             # iframe 재진입 후 입력
             for fid in ["ifrmSeat", "ifrmCaptcha"]:
                 try:
