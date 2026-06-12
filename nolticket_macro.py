@@ -12,6 +12,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from urllib.request import urlretrieve
+from bs4 import BeautifulSoup
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QTextCursor
@@ -84,6 +85,93 @@ class MacroThread(QThread):
         answer = self._captcha_answer
         self.sig.input_hide.emit()
         return answer
+
+    # ── 페이지에서 구역 목록 읽기
+    def _get_zones(self, grade_idx):
+        """
+        인터파크 좌석 선택 페이지에서 구역 이름 목록 반환.
+        grade_idx: 0=모두, 1~6=특정등급 인덱스
+        """
+        GRADE_KW = ["스탠딩R","스탠딩S","지정석R","지정석S","지정석A","지정석B"]
+        driver = self.driver
+        zones = []
+
+        driver.switch_to.default_content()
+        for fid in ["ifrmSeat", "mainFrame"]:
+            try:
+                driver.switch_to.frame(driver.find_element(By.ID, fid))
+                break
+            except:
+                pass
+
+        try:
+            # 우측 패널 좌석등급 목록 파싱
+            bs = BeautifulSoup(driver.page_source, "html.parser")
+
+            # 구역 area 태그 (좌석 지도)
+            areas = bs.find_all("area")
+            for area in areas:
+                title = area.get("title") or area.get("alt") or ""
+                if not title:
+                    continue
+                if grade_idx == 0:
+                    zones.append(title)
+                else:
+                    kw = GRADE_KW[grade_idx - 1] if grade_idx >= 1 else ""
+                    if kw and kw in title:
+                        zones.append(title)
+
+            # area가 없으면 우측 패널 span/td 에서 구역번호 파싱
+            if not zones:
+                for el in bs.find_all(["span", "td", "li"]):
+                    t = el.get_text(strip=True)
+                    if "영역" in t or "구역" in t:
+                        zones.append(t)
+        except:
+            pass
+
+        driver.switch_to.default_content()
+
+        # 중복 제거 + 정렬
+        seen = set()
+        unique = []
+        for z in zones:
+            if z not in seen:
+                seen.add(z)
+                unique.append(z)
+        return unique
+
+    # ── 구역 선택 요청
+    def _ask_zones(self, grade_idx):
+        zone_list = self._get_zones(grade_idx)
+
+        if not zone_list:
+            self.log("구역 목록을 읽지 못했습니다. 직접 입력해주세요 (예: 001영역,002영역)")
+        else:
+            for i, z in enumerate(zone_list, start=1):
+                self.log(f"{i}. {z}")
+
+        self.log("→")
+
+        answer = self._ask_user(timeout=120)
+        if not answer:
+            return zone_list  # 입력 없으면 전체
+
+        self.log(f"→ {answer}")
+
+        # 숫자 입력이면 번호로 선택, 아니면 문자 그대로 사용
+        selected = []
+        for part in answer.split(","):
+            part = part.strip()
+            try:
+                idx = int(part) - 1
+                if 0 <= idx < len(zone_list):
+                    selected.append(zone_list[idx])
+            except:
+                if part:
+                    selected.append(part)
+
+        return selected if selected else zone_list
 
     # ── 좌석 등급 선택
     def _ask_seat_grade(self):
@@ -248,7 +336,13 @@ class MacroThread(QThread):
             # 좌석 등급 선택
             grade_idx = self._ask_seat_grade()   # 0=모두, 1~6=특정등급
 
-            # TODO: 다음 단계(구역 순회 좌석 선택) 추가 예정
+            self._wait(0.3)
+
+            # 구역 선택
+            selected_zones = self._ask_zones(grade_idx)
+            self.log(f"선택 구역: {', '.join(selected_zones) if selected_zones else '전체'}")
+
+            # TODO: 다음 단계(구역 순회 + 좌석 클릭) 추가 예정
 
         except InterruptedError:
             self.log("매크로 중단됨")
