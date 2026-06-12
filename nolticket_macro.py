@@ -6,8 +6,12 @@ import threading
 import traceback
 
 from selenium import webdriver
+from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+from urllib.request import urlretrieve
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QTextCursor
@@ -19,11 +23,15 @@ from PyQt5.QtWidgets import (
 
 EXPIRE_DATE = "~26.09.30"
 
+
 # ──────────────────────────────────────────────
 #  신호 브릿지
 # ──────────────────────────────────────────────
 class Signals(QObject):
-    log_signal = pyqtSignal(str)
+    log_signal      = pyqtSignal(str)    # 로그 추가
+    captcha_signal  = pyqtSignal()       # 보안문자 입력창 표시 요청
+    input_hide      = pyqtSignal()       # 보안문자 입력창 숨김
+
 
 # ──────────────────────────────────────────────
 #  매크로 스레드
@@ -40,10 +48,19 @@ class MacroThread(QThread):
         self._stop      = False
         self._pause     = False
 
-    def stop(self):  self._stop = True
+        self._captcha_event  = threading.Event()
+        self._captcha_answer = ""
+
+    def stop(self):
+        self._stop = True
+
     def pause(self):
         self._pause = not self._pause
         return self._pause
+
+    def set_captcha_answer(self, text):
+        self._captcha_answer = text
+        self._captcha_event.set()
 
     def log(self, msg):
         now = time.strftime("%Y/%m/%d %H:%M:%S")
@@ -57,6 +74,102 @@ class MacroThread(QThread):
                 time.sleep(0.1)
                 if self._stop: raise InterruptedError
             time.sleep(0.05)
+
+    # ── 보안문자 처리
+    def _handle_captcha(self):
+        driver = self.driver
+        wait   = WebDriverWait(driver, 8)
+
+        for attempt in range(10):
+            self._wait(0.3)
+            driver.switch_to.default_content()
+
+            # iframe 진입
+            for fid in ["ifrmSeat", "ifrmCaptcha"]:
+                try:
+                    driver.switch_to.frame(driver.find_element(By.ID, fid))
+                    break
+                except:
+                    pass
+
+            # 캡차 이미지 확인
+            captcha_el = None
+            for sel in ["#imgCaptcha", "img[id*='captcha' i]"]:
+                try:
+                    captcha_el = wait.until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+                    )
+                    break
+                except:
+                    pass
+
+            if captcha_el is None:
+                driver.switch_to.default_content()
+                return True  # 캡차 없음
+
+            # 사용자에게 입력 요청
+            self.log("보안 문자를 입력해주세요. 입력 후, 0을 입력해주세요 →")
+            driver.switch_to.default_content()
+
+            self._captcha_event.clear()
+            self.sig.captcha_signal.emit()
+
+            # 최대 60초 대기
+            if not self._captcha_event.wait(timeout=60):
+                self.log("보안문자 입력 시간 초과")
+                return False
+
+            answer = self._captcha_answer
+            self.sig.input_hide.emit()
+
+            if not answer:
+                return False
+
+            # iframe 재진입 후 입력
+            for fid in ["ifrmSeat", "ifrmCaptcha"]:
+                try:
+                    driver.switch_to.frame(driver.find_element(By.ID, fid))
+                    break
+                except:
+                    pass
+
+            try:
+                try:
+                    driver.find_element(
+                        By.XPATH, "//div[@class='validationTxt']//span"
+                    ).click()
+                except:
+                    pass
+                inp = driver.find_element(By.ID, "txtCaptcha")
+                inp.clear()
+                inp.send_keys(answer)
+                self._wait(0.3)
+                driver.execute_script("fnCheck();")
+                self._wait(0.8)
+            except Exception as e:
+                self.log(f"보안문자 입력 오류: {e}")
+                driver.switch_to.default_content()
+                continue
+
+            # 성공 여부 확인
+            page = driver.page_source
+            if 'validationTxt alert' in page or "다시 입력" in page:
+                self.log(f"보안문자 오류 - 재시도 ({attempt+1}/10)")
+                try:
+                    driver.execute_script("fnCapchaRefresh();")
+                except:
+                    pass
+                driver.switch_to.default_content()
+                self._wait(0.5)
+                self.sig.captcha_signal.emit()
+                continue
+            else:
+                self.log("→ 보안문자 통과")
+                driver.switch_to.default_content()
+                return True
+
+        driver.switch_to.default_content()
+        return False
 
     def run(self):
         try:
@@ -79,28 +192,32 @@ class MacroThread(QThread):
             self.log("→ 로그인 완료")
             self.log("원하는 링크에 들어가서 [예매하기] 버튼을 눌러 주세요.")
 
-            # 예매하기 버튼 클릭 감지 대기 (최대 30분)
+            # 예매(Book) 페이지 진입 대기 (최대 30분)
             for _ in range(1800):
                 self._wait(1)
                 try:
                     cur = self.driver.current_url
-                    # 예매 페이지로 넘어갔는지 감지
-                    if "Book" in cur or "book" in cur or "interpark.com/ticket" in cur:
+                    if "poticket" in cur or "Book" in cur:
                         self.log("예매 페이지 감지")
                         break
                 except:
                     pass
+
+            self._wait(2)
+
+            # 보안문자 처리
+            self._handle_captcha()
 
             # TODO: 다음 단계 추가 예정
 
         except InterruptedError:
             self.log("매크로 중단됨")
         except Exception as e:
-            self.log(f"오류: {e}")
+            self.log(f"오류: {e}\n{traceback.format_exc()}")
 
 
 # ──────────────────────────────────────────────
-#  컨트롤 창 (매크로 실행 중 표시)
+#  컨트롤 창
 # ──────────────────────────────────────────────
 class ControlWindow(QWidget):
     def __init__(self, driver, login_type, user_id, user_pw, delay):
@@ -108,13 +225,14 @@ class ControlWindow(QWidget):
         self.setWindowTitle("인터파크티켓 취소표 매크로")
         self.setFont(QFont("맑은 고딕", 9))
         self.setFixedWidth(310)
-        self.setFixedHeight(190)
 
         self._sig    = Signals()
         self._thread = MacroThread(driver, login_type, user_id, user_pw, delay, self._sig)
         self._paused = False
 
         self._sig.log_signal.connect(self._append_log)
+        self._sig.captcha_signal.connect(self._show_captcha_input)
+        self._sig.input_hide.connect(self._hide_captcha_input)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(8, 8, 8, 8)
@@ -123,13 +241,36 @@ class ControlWindow(QWidget):
         # 로그창
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
+        self.log_box.setFixedHeight(130)
         self.log_box.setFont(QFont("맑은 고딕", 9))
         self.log_box.setStyleSheet(
             "background:#ffffff; color:#222; border:1px solid #ccc;"
         )
         layout.addWidget(self.log_box)
 
-        # 버튼
+        # 보안문자 입력행 (평소엔 숨김)
+        self.captcha_row = QWidget()
+        cap_layout = QHBoxLayout()
+        cap_layout.setContentsMargins(0, 0, 0, 0)
+        cap_layout.setSpacing(4)
+        self.captcha_edit = QLineEdit()
+        self.captcha_edit.setPlaceholderText("보안문자 입력")
+        self.captcha_edit.setFixedHeight(28)
+        self.captcha_edit.returnPressed.connect(self._submit_captcha)
+        self.captcha_btn = QPushButton("입력완료")
+        self.captcha_btn.setFixedHeight(28)
+        self.captcha_btn.setFixedWidth(64)
+        self.captcha_btn.setStyleSheet(
+            "background:#4a90d9; color:white; font-weight:bold; border-radius:3px;"
+        )
+        self.captcha_btn.clicked.connect(self._submit_captcha)
+        cap_layout.addWidget(self.captcha_edit)
+        cap_layout.addWidget(self.captcha_btn)
+        self.captcha_row.setLayout(cap_layout)
+        self.captcha_row.hide()
+        layout.addWidget(self.captcha_row)
+
+        # 중단하기 / 일시정지
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
 
@@ -152,11 +293,26 @@ class ControlWindow(QWidget):
         layout.addLayout(btn_row)
 
         self.setLayout(layout)
+        self.adjustSize()
         self._thread.start()
 
     def _append_log(self, msg):
         self.log_box.append(msg)
         self.log_box.moveCursor(QTextCursor.End)
+
+    def _show_captcha_input(self):
+        self.captcha_edit.clear()
+        self.captcha_row.show()
+        self.captcha_edit.setFocus()
+        self.adjustSize()
+
+    def _hide_captcha_input(self):
+        self.captcha_row.hide()
+        self.adjustSize()
+
+    def _submit_captcha(self):
+        text = self.captcha_edit.text().strip()
+        self._thread.set_captcha_answer(text)
 
     def _on_stop(self):
         self._thread.stop()
@@ -289,7 +445,6 @@ class LoginWindow(QWidget):
         user_pw    = self.edit_pw.text()
         delay      = self.spin_delay.value()
 
-        # 브라우저 열기
         try:
             options = webdriver.ChromeOptions()
             options.add_argument("--disable-blink-features=AutomationControlled")
@@ -308,13 +463,11 @@ class LoginWindow(QWidget):
             QMessageBox.critical(self, "오류", f"Chrome 드라이버 실행 실패:\n{e}")
             return
 
-        # NOL 인터파크 로그인 페이지 열기
         try:
             driver.get("https://accounts.yanolja.com/?clientId=inpark-pc&postProc=FULLSCREEN&origin=https%3A%2F%2Fnol.interpark.com")
         except:
             pass
 
-        # 컨트롤 창 열기
         self._control_win = ControlWindow(driver, login_type, user_id, user_pw, delay)
         self._control_win.show()
         self.hide()
