@@ -173,6 +173,96 @@ class MacroThread(QThread):
 
         return selected if selected else zone_list
 
+    # ── 구역 순회 + 좌석 선택
+    def _rotate_zones(self, zone_names, grade_idx):
+        GRADE_KW = ["스탠딩R","스탠딩S","지정석R","지정석S","지정석A","지정석B"]
+        target_kw = GRADE_KW[grade_idx - 1] if grade_idx >= 1 else None
+
+        self.log(f"구역 순회를 시작합니다 (딜레이 {self.delay}초)")
+
+        driver = self.driver
+        zone_cycle = 0
+
+        while True:
+            self._wait(0)  # 중단/일시정지 체크
+
+            for zone_name in zone_names:
+                self._wait(0)
+
+                # ── 좌석 iframe 진입
+                driver.switch_to.default_content()
+                for fid in ["ifrmSeat", "mainFrame"]:
+                    try:
+                        driver.switch_to.frame(driver.find_element(By.ID, fid))
+                        break
+                    except:
+                        pass
+
+                # ── 구역 클릭
+                clicked = False
+                try:
+                    areas = driver.find_elements(By.TAG_NAME, "area")
+                    for area in areas:
+                        title = area.get_attribute("title") or area.get_attribute("alt") or ""
+                        if zone_name in title or title in zone_name:
+                            driver.execute_script("arguments[0].click();", area)
+                            clicked = True
+                            break
+                except:
+                    pass
+
+                if not clicked:
+                    # href javascript 방식 시도
+                    try:
+                        areas = driver.find_elements(By.TAG_NAME, "area")
+                        for area in areas:
+                            href = area.get_attribute("href") or ""
+                            if zone_name.replace("영역","").strip() in href:
+                                driver.execute_script(
+                                    href.replace("javascript:", "")
+                                )
+                                clicked = True
+                                break
+                    except:
+                        pass
+
+                self._wait(self.delay)
+
+                # ── 좌석 탐색
+                seat_found = self._try_select_seat(target_kw)
+                if seat_found:
+                    driver.switch_to.default_content()
+                    return True
+
+                driver.switch_to.default_content()
+
+            zone_cycle += 1
+            if zone_cycle % 5 == 0:
+                self.log(f"구역 순회 {zone_cycle}바퀴 완료 - 계속 탐색 중...")
+
+    # ── 현재 구역에서 좌석 클릭 시도
+    def _try_select_seat(self, target_kw):
+        driver = self.driver
+        try:
+            seats = driver.find_elements(
+                By.CSS_SELECTOR, "img.stySeat, span[onclick*='Seat'], td[onclick*='Seat']"
+            )
+            for seat in seats:
+                alt  = seat.get_attribute("alt")   or ""
+                title= seat.get_attribute("title") or ""
+                text = (alt + title).upper()
+
+                if target_kw and target_kw.upper() not in text:
+                    continue
+
+                driver.execute_script("arguments[0].click();", seat)
+                self.log(f"좌석 선택: {(alt or title)[:30]}")
+                self._wait(0.3)
+                return True
+        except:
+            pass
+        return False
+
     # ── 좌석 등급 선택
     def _ask_seat_grade(self):
         GRADES = [
@@ -342,7 +432,12 @@ class MacroThread(QThread):
             selected_zones = self._ask_zones(grade_idx)
             self.log(f"선택 구역: {', '.join(selected_zones) if selected_zones else '전체'}")
 
-            # TODO: 다음 단계(구역 순회 + 좌석 클릭) 추가 예정
+            self._wait(0.3)
+
+            # 구역 순회 + 좌석 선택
+            self._rotate_zones(selected_zones, grade_idx)
+
+            # TODO: 다음 단계(좌석선택완료 → 결제) 추가 예정
 
         except InterruptedError:
             self.log("매크로 중단됨")
