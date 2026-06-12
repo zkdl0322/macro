@@ -584,8 +584,12 @@ class MacroThread(QThread):
                     if "interpark" in cur or "poticket" in cur or "ticket.interpark" in cur:
                         self.log(f"인터파크 예매 페이지 감지: {cur}")
                         break
-                except:
-                    pass
+                except Exception as e:
+                    err = str(e)
+                    # 연결 타임아웃/네트워크 오류는 조용히 재시도
+                    if "ERR_CONNECTION_TIMED_OUT" in err or "ERR_CONNECTION_REFUSED" in err:
+                        self.log("네트워크 연결 대기 중...")
+                    continue
             else:
                 self.log("페이지 감지 시간 초과 - 현재 페이지에서 진행합니다")
 
@@ -643,8 +647,11 @@ class MacroThread(QThread):
         except InterruptedError:
             self.log("매크로 중단됨")
         except Exception as e:
-            self.log(f"오류: {e}\n{traceback.format_exc()}")
-            self.sig.error_signal.emit(str(e))
+            err_msg = str(e)
+            self.log(f"오류: {err_msg}\n{traceback.format_exc()}")
+            # 네트워크 타임아웃은 팝업 없이 로그만
+            if "ERR_CONNECTION_TIMED_OUT" not in err_msg and "ERR_CONNECTION_REFUSED" not in err_msg:
+                self.sig.error_signal.emit(err_msg)
 
 
 # ─────────────────────────────────────────────────────────
@@ -860,12 +867,17 @@ class MainWindow(QWidget):
 def make_driver():
     options = webdriver.ChromeOptions()
     options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()),
         options=options
     )
+    # 페이지 로드 최대 30초, 스크립트 최대 10초
+    driver.set_page_load_timeout(30)
+    driver.set_script_timeout(10)
     driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
         {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"}
@@ -893,10 +905,15 @@ if __name__ == "__main__":
     # 2) 브라우저 열기
     try:
         driver = make_driver()
-        driver.get("https://www.nolticket.com")
     except Exception as e:
         QMessageBox.critical(None, "드라이버 오류", f"Chrome 드라이버 실행 실패:\n{e}")
         sys.exit(1)
+
+    try:
+        driver.get("https://www.nolticket.com")
+    except Exception:
+        # 연결 타임아웃은 무시 - 사용자가 직접 페이지 이동 가능
+        pass
 
     # 3) 메인 컨트롤 창 (매크로 실행)
     main_win = MainWindow(driver, cfg["count"], cfg["grade_check"])
