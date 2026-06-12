@@ -13,6 +13,9 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from urllib.request import urlretrieve
 from bs4 import BeautifulSoup
+from selenium.webdriver.common.action_chains import ActionChains
+from PIL import Image
+import numpy as np
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QTextCursor
@@ -228,6 +231,9 @@ class MacroThread(QThread):
 
                 self._wait(self.delay)
 
+                # ── 퍼즐 슬라이더 감지 + 자동 해제
+                self._solve_puzzle_if_present()
+
                 # ── 좌석 탐색
                 seat_found = self._try_select_seat(target_kw)
                 if seat_found:
@@ -262,6 +268,112 @@ class MacroThread(QThread):
         except:
             pass
         return False
+
+    # ── 퍼즐 슬라이더 감지 + 자동 해제
+    def _solve_puzzle_if_present(self):
+        driver = self.driver
+
+        driver.switch_to.default_content()
+        for fid in ["ifrmSeat", "mainFrame"]:
+            try:
+                driver.switch_to.frame(driver.find_element(By.ID, fid))
+                break
+            except:
+                pass
+
+        # 퍼즐 팝업 존재 여부 확인
+        puzzle_present = False
+        for sel in [".slider_wrap", ".puzzle_wrap", "[class*='slider']", "[class*='puzzle']"]:
+            try:
+                el = driver.find_element(By.CSS_SELECTOR, sel)
+                if el.is_displayed():
+                    puzzle_present = True
+                    break
+            except:
+                pass
+
+        if not puzzle_present:
+            # 텍스트로도 확인
+            try:
+                if "슬라이더를 밀어" in driver.page_source:
+                    puzzle_present = True
+            except:
+                pass
+
+        if not puzzle_present:
+            driver.switch_to.default_content()
+            return
+
+        # 배경/조각 이미지 캡처
+        bg_path    = "puzzle_bg.png"
+        piece_path = "puzzle_piece.png"
+        offset     = 140  # 기본값
+
+        bg_el    = None
+        piece_el = None
+        for bg_sel in ["#captcha_bg", "#puzzle_bg", "img[id*='bg']", ".puzzle_bg", ".bg_img"]:
+            try:
+                bg_el = driver.find_element(By.CSS_SELECTOR, bg_sel)
+                break
+            except:
+                pass
+        for pc_sel in ["#captcha_piece", "#puzzle_piece", "img[id*='piece']", ".puzzle_piece"]:
+            try:
+                piece_el = driver.find_element(By.CSS_SELECTOR, pc_sel)
+                break
+            except:
+                pass
+
+        if bg_el and piece_el:
+            try:
+                bg_el.screenshot(bg_path)
+                piece_el.screenshot(piece_path)
+                offset = self._calc_puzzle_offset(bg_path, piece_path)
+            except:
+                pass
+
+        self.sig.log_signal.emit(f"[퍼즐 감지 목표 위치: {offset}px]")
+
+        # 슬라이더 드래그
+        slider_el = None
+        for sl_sel in [".btn_slide_right", ".slide_btn", ".slider_btn",
+                       "div[class*='slider'] span", "#nc_1__scale_text"]:
+            try:
+                slider_el = driver.find_element(By.CSS_SELECTOR, sl_sel)
+                break
+            except:
+                pass
+
+        if slider_el:
+            try:
+                ac = ActionChains(driver)
+                ac.click_and_hold(slider_el).pause(0.3)
+                steps   = 20
+                step_px = offset / steps
+                for _ in range(steps):
+                    ac.move_by_offset(step_px, 0).pause(0.02)
+                ac.release().perform()
+                self._wait(1.2)
+            except Exception as e:
+                self.sig.log_signal.emit(f"[슬라이더 드래그 오류: {e}]")
+
+        driver.switch_to.default_content()
+
+    def _calc_puzzle_offset(self, bg_path, piece_path):
+        try:
+            bg    = np.array(Image.open(bg_path).convert("L"), dtype=np.float32)
+            piece = np.array(Image.open(piece_path).convert("L"), dtype=np.float32)
+            ph, pw = piece.shape
+            bh, bw = bg.shape
+            best_x, best_score = 0, float("inf")
+            for x in range(0, bw - pw, 2):
+                score = float(np.mean(np.abs(bg[:ph, x:x+pw] - piece)))
+                if score < best_score:
+                    best_score = score
+                    best_x = x
+            return best_x
+        except:
+            return 140
 
     # ── 좌석 등급 선택
     def _ask_seat_grade(self):
