@@ -4,6 +4,7 @@ import sys
 import time
 import threading
 import traceback
+import winsound
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -375,6 +376,70 @@ class MacroThread(QThread):
         except:
             return 140
 
+    # ── 좌석선택완료 클릭
+    def _click_seat_complete(self):
+        driver = self.driver
+        self.log("좌석선택완료 클릭")
+
+        driver.switch_to.default_content()
+        for fid in ["ifrmSeat", "mainFrame"]:
+            try:
+                driver.switch_to.frame(driver.find_element(By.ID, fid))
+                break
+            except:
+                pass
+
+        for fn in ["fnSelect()", "fnComplete()", "fnSelectSeat()"]:
+            try:
+                driver.execute_script(fn)
+                self._wait(0.5)
+                break
+            except:
+                pass
+
+        # 버튼 직접 클릭 시도
+        try:
+            btn = driver.find_element(
+                By.XPATH,
+                "//a[contains(text(),'좌석선택완료')] | //button[contains(text(),'좌석선택완료')]"
+            )
+            driver.execute_script("arguments[0].click();", btn)
+        except:
+            pass
+
+        driver.switch_to.default_content()
+        self._wait(1.5)
+
+    # ── 결제 대기 + 소리 알림
+    def _wait_payment(self):
+        driver = self.driver
+        self.log("결제 대기 중 - 소리 알림 시작")
+
+        # 소리 알림 (반복 재생)
+        def _beep():
+            for _ in range(10):
+                try:
+                    winsound.Beep(1000, 400)
+                    time.sleep(0.15)
+                    winsound.Beep(1300, 400)
+                    time.sleep(0.3)
+                except:
+                    break
+        threading.Thread(target=_beep, daemon=True).start()
+
+        # 결제 완료 감지 (최대 30분)
+        for _ in range(1800):
+            self._wait(1)
+            try:
+                cur = driver.current_url
+                if any(k in cur for k in ["payment", "pay", "order", "checkout", "BookEnd", "완료"]):
+                    self.log("✅ 결제 완료!")
+                    return
+            except:
+                pass
+
+        self.log("결제 대기 시간 초과")
+
     # ── 좌석 등급 선택
     def _ask_seat_grade(self):
         GRADES = [
@@ -549,7 +614,11 @@ class MacroThread(QThread):
             # 구역 순회 + 좌석 선택
             self._rotate_zones(selected_zones, grade_idx)
 
-            # TODO: 다음 단계(좌석선택완료 → 결제) 추가 예정
+            # 좌석선택완료 클릭
+            self._click_seat_complete()
+
+            # 결제 대기 + 소리 알림
+            self._wait_payment()
 
         except InterruptedError:
             self.log("매크로 중단됨")
