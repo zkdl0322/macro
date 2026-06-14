@@ -31,7 +31,7 @@ LOGIN_URL   = (
     "?clientId=inpark-pc&postProc=FULLSCREEN"
     "&origin=https%3A%2F%2Fnol.interpark.com"
 )
-GRADES = ["스탠딩R", "스탠딩S", "지정석R", "지정석S", "지정석A", "지정석B"]
+GRADES = ["스탠딩R", "스탠딩S", "지정석R", "지정석S", "지정석A", "지정석B"]  # fallback only
 
 
 # ───────────────────────────────────────────────
@@ -198,21 +198,42 @@ class MacroThread(QThread):
 
         return False
 
+    # ── 페이지에서 등급 목록 읽기 ────────────
+    def _get_grades(self):
+        drv = self.driver
+        drv.switch_to.default_content()
+        self._to_frame("ifrmSeat", "mainFrame")
+        grades = []
+        try:
+            bs = BeautifulSoup(drv.page_source, "html.parser")
+            # 좌석 등급 테이블: class 에 grade/rank/class 포함하는 요소
+            for el in bs.find_all(["li", "tr", "td", "span", "div", "label"]):
+                t = el.get_text(strip=True)
+                # 등급 이름 패턴: VIP석, S석, A석, R석, 스탠딩, 지정석 등
+                if any(k in t for k in ["석", "스탠딩", "지정"]) and 2 <= len(t) <= 10:
+                    if t not in grades:
+                        grades.append(t)
+        except:
+            pass
+        drv.switch_to.default_content()
+        return grades if grades else GRADES
+
     # ── 좌석 등급 선택 ────────────────────────
     def _ask_grade(self):
-        self.log("좌석 등급을 선택하세요:")
+        grade_list = self._get_grades()
+        self.log("좌석 등급을 입력해주세요:")
         self.log("1. 모두")
-        for i, g in enumerate(GRADES, 2):
+        for i, g in enumerate(grade_list, 2):
             self.log(f"{i}. {g}")
         ans = self._ask(timeout=120)
         if ans is None:
-            self.log("시간 초과 → 모두로 진행"); return 0
+            self.log("시간 초과 → 모두로 진행"); return 0, grade_list
         self.log(f"→ {ans}")
         try: n = int(ans)
-        except: return 0
-        if n == 1: return 0
-        if 2 <= n <= len(GRADES) + 1: return n - 1
-        return 0
+        except: return 0, grade_list
+        if n == 1: return 0, grade_list
+        if 2 <= n <= len(grade_list) + 1: return n - 1, grade_list
+        return 0, grade_list
 
     # ── iframe 전환 헬퍼 ──────────────────────
     def _to_frame(self, *ids):
@@ -227,11 +248,12 @@ class MacroThread(QThread):
         return False
 
     # ── 구역 목록 파싱 ────────────────────────
-    def _get_zones(self, grade_idx):
+    def _get_zones(self, grade_idx, grade_list=None):
         drv = self.driver
         drv.switch_to.default_content()
         self._to_frame("ifrmSeat", "mainFrame")
-        kw    = GRADES[grade_idx - 1] if grade_idx >= 1 else None
+        gl = grade_list or GRADES
+        kw = gl[grade_idx - 1] if grade_idx >= 1 and grade_idx <= len(gl) else None
         zones = []
         try:
             bs = BeautifulSoup(drv.page_source, "html.parser")
@@ -252,14 +274,14 @@ class MacroThread(QThread):
         return unique
 
     # ── 구역 선택 ─────────────────────────────
-    def _ask_zones(self, grade_idx):
-        zone_list = self._get_zones(grade_idx)
+    def _ask_zones(self, grade_idx, grade_list=None):
+        zone_list = self._get_zones(grade_idx, grade_list)
         if not zone_list:
             self.log("구역 목록을 읽지 못했습니다. 직접 입력 (예: 001영역,002영역)")
         else:
             for i, z in enumerate(zone_list, 1):
                 self.log(f"{i}. {z}")
-        self.log("→ 번호(콤마 구분) 또는 직접 입력")
+        self.log("구역을 번호로 입력해주세요. ','로 구분하여 여러개 입력 가능합니다.")
         ans = self._ask(timeout=120)
         if not ans: return zone_list
         self.log(f"→ {ans}")
@@ -275,9 +297,10 @@ class MacroThread(QThread):
         return selected if selected else zone_list
 
     # ── 좌석 클릭 ─────────────────────────────
-    def _click_seat(self, grade_idx):
+    def _click_seat(self, grade_idx, grade_list=None):
         drv = self.driver
-        kw  = GRADES[grade_idx - 1].upper() if grade_idx >= 1 else None
+        gl = grade_list or GRADES
+        kw = gl[grade_idx - 1].upper() if grade_idx >= 1 and grade_idx <= len(gl) else None
         try:
             seats = drv.find_elements(
                 By.CSS_SELECTOR,
@@ -329,7 +352,7 @@ class MacroThread(QThread):
                     if sc < best_sc: best_sc = sc; best_x = x
                 offset = best_x
             except: pass
-        self.log(f"[퍼즐 목표: {offset}px]")
+        self.log(f"[퍼즐 감지] 목표 위치: {offset}px")
         slider = None
         for s in [".btn_slide_right",".slide_btn",".slider_btn",
                   "div[class*='slider'] span","#nc_1__scale_text"]:
@@ -345,9 +368,9 @@ class MacroThread(QThread):
         drv.switch_to.default_content()
 
     # ── 구역 순회 ─────────────────────────────
-    def _rotate_zones(self, zones, grade_idx):
+    def _rotate_zones(self, zones, grade_idx, grade_list=None):
         drv, cycle = self.driver, 0
-        self.log(f"구역 순회 시작 (딜레이 {self.delay}초)")
+        self.log(f"구역 순회를 시작합니다 (딜레이 {self.delay}초)")
         while True:
             for zone in zones:
                 self._wait(0)
@@ -371,7 +394,7 @@ class MacroThread(QThread):
                     except: pass
                 self._wait(self.delay)
                 self._solve_puzzle()
-                if self._click_seat(grade_idx):
+                if self._click_seat(grade_idx, grade_list):
                     drv.switch_to.default_content(); return
                 drv.switch_to.default_content()
             cycle += 1
@@ -443,16 +466,16 @@ class MacroThread(QThread):
                 self._wait(1)
 
             # ④ 좌석 등급 선택
-            grade_idx = self._ask_grade()
+            grade_idx, grade_list = self._ask_grade()
             self._wait(0.3)
 
             # ⑤ 구역 선택
-            zones = self._ask_zones(grade_idx)
+            zones = self._ask_zones(grade_idx, grade_list)
             self.log(f"선택 구역: {', '.join(zones) if zones else '전체'}")
             self._wait(0.3)
 
             # ⑥ 구역 순회 + 좌석 클릭
-            self._rotate_zones(zones, grade_idx)
+            self._rotate_zones(zones, grade_idx, grade_list)
 
             # ⑦ 좌석선택완료
             self._click_complete()
