@@ -430,7 +430,7 @@ class MacroThread(QThread):
                     if "문자를 입력해주세요" in src or "안심예매" in src:
                         self._handle_page_captcha()
                         continue
-                    if "accounts" not in cur and "login" not in cur and "nol.interpark" in cur:
+                    if "accounts" not in cur and "login" not in cur and ("nol.interpark" in cur or "nol.yanolja" in cur):
                         break
                 except: pass
             else:
