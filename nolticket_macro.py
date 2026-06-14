@@ -510,29 +510,48 @@ class MacroThread(QThread):
     # ── 구역 순회 ─────────────────────────────
     def _rotate_zones(self, zones, grade_idx, grade_list=None):
         cycle = 0
+        consecutive_err = 0
         self.log(f"구역 순회를 시작합니다 (딜레이 {self.delay}초)")
         while True:
             for zone in zones:
+                # 정지/일시정지 체크
                 self._wait(0)
+                # 브라우저 세션이 살아있는지 확인
+                try:
+                    _ = self.driver.current_url
+                except Exception:
+                    self.log("브라우저가 종료되어 순회를 중단합니다."); return
+                # 구역 하나에서 오류가 나도 순회를 멈추지 않도록 격리
+                try:
+                    # 좌석 상세 뷰면 구역맵으로 복귀
+                    if self._on_detail_page():
+                        self._back_to_zonemap()
 
-                # 좌석 상세 뷰면 구역맵으로 복귀
-                if self._on_detail_page():
-                    self._back_to_zonemap()
+                    # 구역번호 정규화: "가(001)"→"001", "105구역"→"105"
+                    zone_num = zone.replace("구역", "").strip()
+                    if "(" in zone_num:
+                        zone_num = zone_num.split("(")[-1].replace(")", "").strip()
 
-                # 구역번호 정규화: "가(001)"→"001", "105구역"→"105"
-                zone_num = zone.replace("구역", "").strip()
-                if "(" in zone_num:
-                    zone_num = zone_num.split("(")[-1].replace(")", "").strip()
+                    # 구역 클릭
+                    if not self._click_zone(zone_num):
+                        continue
+                    self._wait(self.delay)
 
-                # 구역 클릭
-                if not self._click_zone(zone_num):
+                    # 퍼즐(있으면) 해제 후 좌석 클릭 시도
+                    self._solve_puzzle()
+                    if self._click_seat(grade_idx, grade_list):
+                        return
+                    consecutive_err = 0
+                except InterruptedError:
+                    raise
+                except Exception as e:
+                    # 일시적 오류는 로그만 남기고 다음 구역으로
+                    consecutive_err += 1
+                    self.log(f"구역 처리 오류(건너뜀): {str(e)[:60]}")
+                    if consecutive_err >= 15:
+                        self.log("오류가 계속되어 순회를 중단합니다."); return
+                    self._wait(0.5)
                     continue
-                self._wait(self.delay)
-
-                # 퍼즐(있으면) 해제 후 좌석 클릭 시도
-                self._solve_puzzle()
-                if self._click_seat(grade_idx, grade_list):
-                    return
             cycle += 1
             if cycle % 5 == 0:
                 self.log(f"구역 순회 {cycle}바퀴 완료...")
