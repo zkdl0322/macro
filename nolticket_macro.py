@@ -112,22 +112,60 @@ class MacroThread(QThread):
             ("accounts.yanolja.com" in url and "myaccount" in url)
         )
 
-    # ── 안심예매 캡챠 팝업 감지 ──────────────
-    def _captcha_visible(self):
+    # ── 캡챠 입력창 요소 찾기 (iframe 포함) ──
+    def _find_captcha_input(self):
+        drv = self.driver
+        input_sels = [
+            "input[placeholder*='문자를 입력해주세요']",
+            "input[placeholder*='문자']",
+            ".captcha_input input",
+            "#captchaInput",
+        ]
+        # 1) 현재 컨텍스트에서 탐색
+        for sel in input_sels:
+            try:
+                el = drv.find_element(By.CSS_SELECTOR, sel)
+                if el.is_displayed(): return el
+            except: pass
+        # 2) 모든 iframe 시도
         try:
+            frames = drv.find_elements(By.TAG_NAME, "iframe")
+        except: frames = []
+        for frame in frames:
+            try:
+                drv.switch_to.frame(frame)
+                for sel in input_sels:
+                    try:
+                        el = drv.find_element(By.CSS_SELECTOR, sel)
+                        if el.is_displayed(): return el
+                    except: pass
+                drv.switch_to.default_content()
+            except:
+                drv.switch_to.default_content()
+        return None
+
+    # ── 안심예매 캡챠 팝업 감지 (요소 실제 표시 여부) ──
+    def _captcha_visible(self):
+        drv = self.driver
+        try:
+            drv.switch_to.default_content()
+            if self._find_captcha_input() is not None:
+                return True
+            # fallback: 소스에 캡챠 이미지 태그가 있는지
             src = self._src()
-            return "안심예매" in src and "문자를 입력해주세요" in src
-        except: return False
+            return ("captchaImg" in src or "captcha_img" in src
+                    or ("안심예매" in src and "보안문자" in src))
+        except:
+            return False
 
     # ── 안심예매 캡챠 처리 ────────────────────
-    # 팝업에 직접 텍스트 입력 → 입력완료 클릭
     def _handle_captcha(self):
         drv = self.driver
-        drv.switch_to.default_content()
 
         for attempt in range(10):
+            drv.switch_to.default_content()
             if not self._captcha_visible():
-                return True
+                self.log("→ 캡챠 통과"); return True
 
             self.log("보안 문자를 입력해주세요. 없을 경우, 0을 입력해주세요 →")
             ans = self._ask(timeout=90)
@@ -135,25 +173,12 @@ class MacroThread(QThread):
                 self.log("입력 시간 초과"); return False
             self.log(f"→ {ans}")
 
-            # 0 입력 시 캡챠 없음으로 처리
             if ans.strip() == "0":
                 return True
 
             try:
-                # 캡챠 입력창 찾기
-                inp = None
-                for sel in [
-                    "input[placeholder*='문자를 입력해주세요']",
-                    "input[placeholder*='문자']",
-                    ".captcha_input input",
-                    "#captchaInput",
-                    "input[type='text']",
-                ]:
-                    try:
-                        el = drv.find_element(By.CSS_SELECTOR, sel)
-                        if el.is_displayed(): inp = el; break
-                    except: pass
-
+                drv.switch_to.default_content()
+                inp = self._find_captcha_input()
                 if not inp:
                     self.log("입력창을 찾지 못했습니다"); return False
 
@@ -166,35 +191,39 @@ class MacroThread(QThread):
                 for bsel in [
                     "//button[contains(text(),'입력완료')]",
                     "//a[contains(text(),'입력완료')]",
+                    "//button[contains(text(),'확인')]",
+                    "//input[@type='submit']",
                 ]:
                     try:
                         btn = drv.find_element(By.XPATH, bsel)
-                        drv.execute_script("arguments[0].click();", btn)
-                        confirmed = True; break
+                        if btn.is_displayed():
+                            drv.execute_script("arguments[0].click();", btn)
+                            confirmed = True; break
                     except: pass
 
                 if not confirmed:
-                    for bsel in [".btn_ok", ".btn_confirm", "button.confirm"]:
+                    for bsel in [".btn_ok", ".btn_confirm", "button.confirm",
+                                 "button[type='submit']"]:
                         try:
-                            drv.find_element(By.CSS_SELECTOR, bsel).click()
-                            confirmed = True; break
+                            el = drv.find_element(By.CSS_SELECTOR, bsel)
+                            if el.is_displayed():
+                                drv.execute_script("arguments[0].click();", el)
+                                confirmed = True; break
                         except: pass
 
-                self._wait(1.5)
+                drv.switch_to.default_content()
+                self._wait(2.0)  # 제출 후 충분히 대기
 
             except Exception as e:
                 self.log(f"캡챠 처리 오류: {e}")
+                drv.switch_to.default_content()
                 continue
 
+            drv.switch_to.default_content()
             if not self._captcha_visible():
                 self.log("→ 캡챠 통과"); return True
 
             self.log(f"캡챠 재시도 ({attempt+1}/10)")
-            # 날짜 다시 선택 후 재시도
-            try:
-                drv.find_element(By.XPATH, "//button[contains(text(),'날짜 다시 선택')]").click()
-                self._wait(1)
-            except: pass
 
         return False
 
