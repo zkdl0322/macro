@@ -498,6 +498,13 @@ class MacroThread(QThread):
                 self.log("로그인 대기 시간 초과"); return
             self.log("→ 로그인 완료")
 
+            # 로그인 후 myaccount 등으로 가있으면 NOL 메인으로 이동
+            try:
+                if "nol.yanolja.com" not in self._url():
+                    self.driver.get("https://nol.yanolja.com/")
+                    self._wait(2)
+            except: pass
+
             # ② 예매 페이지 대기
             self.log("원하시는 링크에 들어가서 [예매하기] 버튼을 눌러 주세요.")
             for _ in range(1800):
