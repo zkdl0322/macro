@@ -374,6 +374,49 @@ class MacroThread(QThread):
                 driver.switch_to.default_content(); return True
         driver.switch_to.default_content(); return False
 
+    def _handle_page_captcha(self):
+        """메인 페이지(iframe 외부)에 뜨는 안심예매 캡챠 처리"""
+        driver = self.driver
+        driver.switch_to.default_content()
+        for attempt in range(10):
+            captcha_present = False
+            try:
+                src = driver.page_source
+                if "문자를 입력해주세요" in src or "안심예매" in src:
+                    captcha_present = True
+            except: pass
+            if not captcha_present:
+                return True
+            self.log("보안 문자를 입력해주세요 →")
+            answer = self._ask_user(timeout=60)
+            if not answer:
+                self.log("보안문자 입력 시간 초과"); return False
+            self.log(f"→ {answer}")
+            try:
+                inp = None
+                for sel in ["input[placeholder*='문자']", "#captcha_input", "input[type='text']"]:
+                    try: inp = driver.find_element(By.CSS_SELECTOR, sel); break
+                    except: pass
+                if inp:
+                    inp.clear(); inp.send_keys(answer)
+                    self._wait(0.3)
+                    for btn_sel in ["button[type='submit']", ".btn_confirm", ".btn_ok", "button"]:
+                        try:
+                            btn = driver.find_element(By.CSS_SELECTOR, btn_sel)
+                            driver.execute_script("arguments[0].click();", btn); break
+                        except: pass
+                    self._wait(1.0)
+                else:
+                    self.log("입력창을 찾지 못했습니다"); return False
+            except Exception as e:
+                self.log(f"캡챠 입력 오류: {e}"); return False
+            try:
+                if "문자를 입력해주세요" not in driver.page_source:
+                    self.log("→ 캡챠 통과"); return True
+            except: pass
+            self.log(f"캡챠 재시도 ({attempt+1}/10)")
+        return False
+
     def run(self):
         try:
             self.log("매크로 실행 시작")
@@ -382,6 +425,11 @@ class MacroThread(QThread):
                 self._wait(1)
                 try:
                     cur = self.driver.current_url
+                    # 안심예매 캡챠가 먼저 뜨는 경우 처리
+                    src = self.driver.page_source
+                    if "문자를 입력해주세요" in src or "안심예매" in src:
+                        self._handle_page_captcha()
+                        continue
                     if "accounts" not in cur and "login" not in cur and "nol.interpark" in cur:
                         break
                 except: pass
