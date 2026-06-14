@@ -376,11 +376,24 @@ class MacroThread(QThread):
     def _rotate_zones(self, zones, grade_idx, grade_list=None):
         drv, cycle = self.driver, 0
         self.log(f"구역 순회를 시작합니다 (딜레이 {self.delay}초)")
+        book_url = self._url()  # 예매 페이지 URL 저장
         while True:
             for zone in zones:
                 self._wait(0)
+
+                # 구역맵으로 복귀: 좌석 상세 뷰에서 빠져나오기
+                try:
+                    cur = self._url()
+                    src = self._src()
+                    # 좌석 상세 뷰 감지 (열/좌석 배치도)
+                    if "배치도" in src or "열" in src[:500]:
+                        drv.back()
+                        self._wait(1)
+                except: pass
+
                 drv.switch_to.default_content()
                 self._to_frame("ifrmSeat", "mainFrame")
+
                 # 구역 이름 정규화: "가(001)" → "001", "1구역" → "1"
                 zone_num = zone.replace("구역","").strip()
                 if "(" in zone_num:
