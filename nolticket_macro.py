@@ -130,11 +130,7 @@ class MacroThread(QThread):
     # 로그인 후 URL: nol.interpark.com 또는 nol.yanolja.com 또는 myaccount
     def _is_logged_in(self):
         url = self._url()
-        return (
-            "nol.interpark.com" in url or
-            "nol.yanolja.com"   in url or
-            ("accounts.yanolja.com" in url and "myaccount" in url)
-        )
+        return "nol.yanolja.com" in url
 
     # ── 캡챠 입력창 요소 찾기 (iframe 포함) ──
     def _find_captcha_input(self):
