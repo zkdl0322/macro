@@ -127,14 +127,10 @@ class MacroThread(QThread):
         except: return ""
 
     # ── 로그인 완료 감지 ──────────────────────
-    # 로그인 후 URL: nol.interpark.com 또는 nol.yanolja.com 또는 myaccount
+    # nol.yanolja.com 만 로그인 완료로 인식
     def _is_logged_in(self):
         url = self._url()
-        return (
-            "nol.yanolja.com" in url or
-            "myaccount" in url or
-            "nol.interpark.com" in url
-        )
+        return "nol.yanolja.com" in url
 
     # ── 캡챠 입력창 요소 찾기 (iframe 포함) ──
     # 캡챠 전용 placeholder만 엄격하게 매칭 (다른 입력창 오인 방지)
