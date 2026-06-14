@@ -373,23 +373,45 @@ class MacroThread(QThread):
             except Exception as e: self.log(f"슬라이더 오류: {e}")
         drv.switch_to.default_content()
 
+    # ── 구역맵(좌석도 전체보기)으로 복귀 ──────
+    def _back_to_zonemap(self):
+        drv = self.driver
+        drv.switch_to.default_content()
+        self._to_frame("ifrmSeat", "mainFrame")
+        # "좌석도 전체보기" / "전체보기" 버튼 클릭
+        for xp in [
+            "//a[contains(text(),'좌석도 전체보기')]",
+            "//button[contains(text(),'좌석도 전체보기')]",
+            "//a[contains(text(),'전체보기')]",
+            "//button[contains(text(),'전체보기')]",
+            "//*[contains(@onclick,'AllSeat')]",
+            "//*[contains(@onclick,'ZoneMap')]",
+        ]:
+            try:
+                el = drv.find_element(By.XPATH, xp)
+                drv.execute_script("arguments[0].click();", el)
+                self._wait(0.8)
+                drv.switch_to.default_content()
+                self._to_frame("ifrmSeat", "mainFrame")
+                return True
+            except: pass
+        return False
+
     # ── 구역 순회 ─────────────────────────────
     def _rotate_zones(self, zones, grade_idx, grade_list=None):
         drv, cycle = self.driver, 0
         self.log(f"구역 순회를 시작합니다 (딜레이 {self.delay}초)")
-        book_url = self._url()  # 예매 페이지 URL 저장
         while True:
             for zone in zones:
                 self._wait(0)
 
-                # 구역맵으로 복귀: 좌석 상세 뷰에서 빠져나오기
+                drv.switch_to.default_content()
+                self._to_frame("ifrmSeat", "mainFrame")
+
+                # 구역맵에 area 태그가 없으면 = 좌석 상세 뷰 → 전체보기로 복귀
                 try:
-                    cur = self._url()
-                    src = self._src()
-                    # 좌석 상세 뷰 감지 (열/좌석 배치도)
-                    if "배치도" in src or "열" in src[:500]:
-                        drv.back()
-                        self._wait(1)
+                    if len(drv.find_elements(By.TAG_NAME, "area")) == 0:
+                        self._back_to_zonemap()
                 except: pass
 
                 drv.switch_to.default_content()
