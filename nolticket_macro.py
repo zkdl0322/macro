@@ -133,11 +133,11 @@ class MacroThread(QThread):
         return "nol.yanolja.com" in url
 
     # ── 캡챠 입력창 요소 찾기 (iframe 포함) ──
+    # 캡챠 전용 placeholder만 엄격하게 매칭 (다른 입력창 오인 방지)
     def _find_captcha_input(self):
         drv = self.driver
         input_sels = [
             "input[placeholder*='문자를 입력해주세요']",
-            "input[placeholder*='문자']",
             ".captcha_input input",
             "#captchaInput",
         ]
@@ -164,17 +164,13 @@ class MacroThread(QThread):
                 drv.switch_to.default_content()
         return None
 
-    # ── 안심예매 캡챠 팝업 감지 (요소 실제 표시 여부) ──
+    # ── 안심예매 캡챠 팝업 감지 ────────────────
+    # 캡챠 전용 입력창(문자를 입력해주세요)이 실제로 화면에 보일 때만 True
     def _captcha_visible(self):
         drv = self.driver
         try:
             drv.switch_to.default_content()
-            if self._find_captcha_input() is not None:
-                return True
-            # fallback: 소스에 캡챠 이미지 태그가 있는지
-            src = self._src()
-            return ("captchaImg" in src or "captcha_img" in src
-                    or ("안심예매" in src and "보안문자" in src))
+            return self._find_captcha_input() is not None
         except:
             return False
 
