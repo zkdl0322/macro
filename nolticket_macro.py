@@ -514,33 +514,40 @@ class MacroThread(QThread):
 
             # 2) 예매 페이지 진입 대기 (최대 30분)
             self.log("원하는 공연 페이지에서 [예매하기] 버튼을 눌러 주세요.")
+            BOOKING_KW = ["poticket", "Book", "motickets", "step2", "ticket"]
             for _ in range(1800):
                 self._wait(1)
                 cur = self._cur_url()
-                if "poticket" in cur or "Book" in cur:
+                if any(k in cur for k in BOOKING_KW):
                     break
-            self._wait(2)
+            self._wait(1.5)
 
-            # 3) iframe 캡챠
+            # 3) 안심예매 캡챠 (예매 페이지에서 뜨는 경우)
+            src = self._page_src()
+            if "문자를 입력해주세요" in src or "안심예매" in src:
+                self._handle_page_captcha()
+                self._wait(1)
+
+            # 4) iframe 캡챠
             self._handle_iframe_captcha()
             self._wait(0.5)
 
-            # 4) 등급 선택
+            # 5) 등급 선택
             grade_idx = self._ask_grade()
             self._wait(0.3)
 
-            # 5) 구역 선택
+            # 6) 구역 선택
             zones = self._ask_zones(grade_idx)
             self.log(f"선택 구역: {', '.join(zones) if zones else '전체'}")
             self._wait(0.3)
 
-            # 6) 구역 순회 + 좌석 클릭
+            # 7) 구역 순회 + 좌석 클릭
             self._rotate_zones(zones, grade_idx)
 
-            # 7) 좌석선택완료
+            # 8) 좌석선택완료
             self._click_complete()
 
-            # 8) 결제 대기
+            # 9) 결제 대기
             self._wait_payment()
 
         except InterruptedError:
