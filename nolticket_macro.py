@@ -426,9 +426,9 @@ class MacroThread(QThread):
                 try:
                     for area in drv.find_elements(By.TAG_NAME, "area"):
                         t = (area.get_attribute("title") or
-                             area.get_attribute("alt") or "")
-                        if (zone in t or t in zone or
-                                zone_num in t or t.strip() == zone_num):
+                             area.get_attribute("alt") or "").strip()
+                        # 정확한 매칭만 허용 (부분 문자열 오인 방지)
+                        if t == zone or t == zone_num or t == zone_num + "구역":
                             drv.execute_script("arguments[0].click();", area)
                             clicked = True; break
                 except: pass
