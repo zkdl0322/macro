@@ -38,9 +38,9 @@ GRADES = ["스탠딩R", "스탠딩S", "지정석R", "지정석S", "지정석A", 
 #  신호 브릿지
 # ───────────────────────────────────────────────
 class Signals(QObject):
-    log_signal     = Signal(str)
-    input_signal   = Signal()   # 입력창 표시
-    input_hide     = Signal()   # 입력창 숨김
+    log_signal   = Signal(str)
+    show_input   = Signal()
+    hide_input   = Signal()
 
 
 # ───────────────────────────────────────────────
@@ -58,18 +58,23 @@ class MacroThread(QThread):
         self._ev     = threading.Event()
         self._answer = ""
 
-    def stop(self):         self._stop = True
-    def toggle_pause(self): self._pause = not self._pause; return self._pause
+    def stop(self):
+        self._stop = True
+
+    def toggle_pause(self):
+        self._pause = not self._pause
+        return self._pause
 
     def set_answer(self, text):
         self._answer = text
         self._ev.set()
 
+    # ── 로그 ──────────────────────────────────
     def log(self, msg):
         ts = time.strftime("%Y/%m/%d %H:%M:%S")
         self.sig.log_signal.emit(f"[{ts}] {msg}")
 
-    # ── 대기 (중단/일시정지 지원) ─────────────
+    # ── 대기 ──────────────────────────────────
     def _wait(self, sec):
         end = time.time() + sec
         while time.time() < end:
@@ -82,13 +87,13 @@ class MacroThread(QThread):
     # ── GUI 입력 요청 ─────────────────────────
     def _ask(self, timeout=120):
         self._ev.clear()
-        self.sig.input_signal.emit()
+        self.sig.show_input.emit()
         ok  = self._ev.wait(timeout=timeout)
         ans = self._answer
-        self.sig.input_hide.emit()
+        self.sig.hide_input.emit()
         return ans if ok else None
 
-    # ── 헬퍼 ──────────────────────────────────
+    # ── URL / 소스 헬퍼 ──────────────────────
     def _url(self):
         try: return self.driver.current_url
         except: return ""
@@ -97,114 +102,111 @@ class MacroThread(QThread):
         try: return self.driver.page_source
         except: return ""
 
-    def _to_frame(self, *ids):
-        self.driver.switch_to.default_content()
-        for fid in ids:
-            try:
-                self.driver.switch_to.frame(self.driver.find_element(By.ID, fid))
-                return True
-            except: pass
-        return False
-
-    def _is_login_done(self):
+    # ── 로그인 완료 감지 ──────────────────────
+    # 로그인 후 URL: nol.interpark.com 또는 nol.yanolja.com 또는 myaccount
+    def _is_logged_in(self):
         url = self._url()
-        return "login" not in url and (
-            "myaccount" in url or
-            "nol.yanolja" in url or
-            "nol.interpark" in url
+        return (
+            "nol.interpark.com" in url or
+            "nol.yanolja.com"   in url or
+            ("accounts.yanolja.com" in url and "myaccount" in url)
         )
 
-    def _has_captcha(self, src=None):
-        s = src or self._src()
-        return "문자를 입력해주세요" in s or "안심예매" in s
+    # ── 안심예매 캡챠 팝업 감지 ──────────────
+    def _captcha_visible(self):
+        try:
+            src = self._src()
+            return "안심예매" in src and "문자를 입력해주세요" in src
+        except: return False
 
     # ── 안심예매 캡챠 처리 ────────────────────
-    def _solve_ansim_captcha(self):
+    # 팝업에 직접 텍스트 입력 → 입력완료 클릭
+    def _handle_captcha(self):
         drv = self.driver
         drv.switch_to.default_content()
+
         for attempt in range(10):
-            if not self._has_captcha():
+            if not self._captcha_visible():
                 return True
-            self.log(f"보안문자를 입력해주세요 →")
+
+            self.log("보안 문자를 입력해주세요. 없을 경우, 0을 입력해주세요 →")
             ans = self._ask(timeout=90)
-            if not ans:
+            if ans is None:
                 self.log("입력 시간 초과"); return False
             self.log(f"→ {ans}")
+
+            # 0 입력 시 캡챠 없음으로 처리
+            if ans.strip() == "0":
+                return True
+
             try:
+                # 캡챠 입력창 찾기
                 inp = None
-                for sel in ["input[placeholder*='문자']", "input[placeholder*='입력']",
-                            "#captchaInput", "input[type='text']"]:
-                    try: inp = drv.find_element(By.CSS_SELECTOR, sel); break
+                for sel in [
+                    "input[placeholder*='문자를 입력해주세요']",
+                    "input[placeholder*='문자']",
+                    ".captcha_input input",
+                    "#captchaInput",
+                    "input[type='text']",
+                ]:
+                    try:
+                        el = drv.find_element(By.CSS_SELECTOR, sel)
+                        if el.is_displayed(): inp = el; break
                     except: pass
+
                 if not inp:
                     self.log("입력창을 찾지 못했습니다"); return False
-                inp.clear(); inp.send_keys(ans)
-                self._wait(0.3)
-                # 확인 버튼 클릭
-                for bsel in ["button[type='submit']", ".btn_check", ".btn_confirm",
-                             ".btn_ok", "button"]:
-                    try:
-                        drv.find_element(By.CSS_SELECTOR, bsel).click(); break
-                    except: pass
-                self._wait(1.5)
-            except Exception as e:
-                self.log(f"캡챠 오류: {e}"); return False
-            if not self._has_captcha():
-                self.log("→ 캡챠 통과"); return True
-            self.log(f"캡챠 재시도 ({attempt+1}/10)")
-        return False
 
-    # ── 인터파크 iframe 캡챠 처리 ─────────────
-    def _solve_iframe_captcha(self):
-        drv  = self.driver
-        wait = WebDriverWait(drv, 6)
-        for attempt in range(10):
-            self._wait(0.3)
-            self._to_frame("ifrmSeat", "ifrmCaptcha")
-            cap = None
-            for sel in ["#imgCaptcha", "img[id*='captcha' i]"]:
-                try:
-                    cap = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
-                    break
-                except: pass
-            if cap is None:
-                drv.switch_to.default_content(); return True
-            self.log("보안문자를 입력해주세요 →")
-            drv.switch_to.default_content()
-            ans = self._ask(timeout=90)
-            if not ans:
-                self.log("입력 시간 초과"); return False
-            self.log(f"→ {ans}")
-            self._to_frame("ifrmSeat", "ifrmCaptcha")
-            try:
-                try: drv.find_element(By.XPATH, "//div[@class='validationTxt']//span").click()
-                except: pass
-                inp = drv.find_element(By.ID, "txtCaptcha")
-                inp.clear(); inp.send_keys(ans)
+                inp.clear()
+                inp.send_keys(ans)
                 self._wait(0.3)
-                drv.execute_script("fnCheck();")
-                self._wait(1.0)
+
+                # 입력완료 버튼 클릭
+                confirmed = False
+                for bsel in [
+                    "//button[contains(text(),'입력완료')]",
+                    "//a[contains(text(),'입력완료')]",
+                ]:
+                    try:
+                        btn = drv.find_element(By.XPATH, bsel)
+                        drv.execute_script("arguments[0].click();", btn)
+                        confirmed = True; break
+                    except: pass
+
+                if not confirmed:
+                    for bsel in [".btn_ok", ".btn_confirm", "button.confirm"]:
+                        try:
+                            drv.find_element(By.CSS_SELECTOR, bsel).click()
+                            confirmed = True; break
+                        except: pass
+
+                self._wait(1.5)
+
             except Exception as e:
-                self.log(f"캡챠 오류: {e}")
-                drv.switch_to.default_content(); continue
-            page = drv.page_source
-            if "validationTxt alert" in page or "다시 입력" in page:
-                self.log(f"오류 - 재시도 ({attempt+1}/10)")
-                try: drv.execute_script("fnCapchaRefresh();")
-                except: pass
-                drv.switch_to.default_content(); self._wait(0.5)
-            else:
-                self.log("→ 캡챠 통과")
-                drv.switch_to.default_content(); return True
-        drv.switch_to.default_content(); return False
+                self.log(f"캡챠 처리 오류: {e}")
+                continue
+
+            if not self._captcha_visible():
+                self.log("→ 캡챠 통과"); return True
+
+            self.log(f"캡챠 재시도 ({attempt+1}/10)")
+            # 날짜 다시 선택 후 재시도
+            try:
+                drv.find_element(By.XPATH, "//button[contains(text(),'날짜 다시 선택')]").click()
+                self._wait(1)
+            except: pass
+
+        return False
 
     # ── 좌석 등급 선택 ────────────────────────
     def _ask_grade(self):
         self.log("좌석 등급을 선택하세요:")
         self.log("1. 모두")
-        for i, g in enumerate(GRADES, 2): self.log(f"{i}. {g}")
+        for i, g in enumerate(GRADES, 2):
+            self.log(f"{i}. {g}")
         ans = self._ask(timeout=120)
-        if ans is None: self.log("시간 초과 → 모두"); return 0
+        if ans is None:
+            self.log("시간 초과 → 모두로 진행"); return 0
         self.log(f"→ {ans}")
         try: n = int(ans)
         except: return 0
@@ -212,21 +214,36 @@ class MacroThread(QThread):
         if 2 <= n <= len(GRADES) + 1: return n - 1
         return 0
 
+    # ── iframe 전환 헬퍼 ──────────────────────
+    def _to_frame(self, *ids):
+        self.driver.switch_to.default_content()
+        for fid in ids:
+            try:
+                self.driver.switch_to.frame(
+                    self.driver.find_element(By.ID, fid)
+                )
+                return True
+            except: pass
+        return False
+
     # ── 구역 목록 파싱 ────────────────────────
     def _get_zones(self, grade_idx):
         drv = self.driver
         drv.switch_to.default_content()
         self._to_frame("ifrmSeat", "mainFrame")
-        zones, kw = [], GRADES[grade_idx - 1] if grade_idx >= 1 else None
+        kw    = GRADES[grade_idx - 1] if grade_idx >= 1 else None
+        zones = []
         try:
             bs = BeautifulSoup(drv.page_source, "html.parser")
             for area in bs.find_all("area"):
                 t = area.get("title") or area.get("alt") or ""
-                if t and (kw is None or kw in t): zones.append(t)
+                if t and (kw is None or kw in t):
+                    zones.append(t)
             if not zones:
-                for el in bs.find_all(["span", "td", "li"]):
+                for el in bs.find_all(["span","td","li"]):
                     t = el.get_text(strip=True)
-                    if "영역" in t or "구역" in t: zones.append(t)
+                    if "영역" in t or "구역" in t:
+                        zones.append(t)
         except: pass
         drv.switch_to.default_content()
         seen, unique = set(), []
@@ -238,9 +255,10 @@ class MacroThread(QThread):
     def _ask_zones(self, grade_idx):
         zone_list = self._get_zones(grade_idx)
         if not zone_list:
-            self.log("구역 목록을 읽지 못했습니다. 직접 입력하세요 (예: 001영역,002영역)")
+            self.log("구역 목록을 읽지 못했습니다. 직접 입력 (예: 001영역,002영역)")
         else:
-            for i, z in enumerate(zone_list, 1): self.log(f"{i}. {z}")
+            for i, z in enumerate(zone_list, 1):
+                self.log(f"{i}. {z}")
         self.log("→ 번호(콤마 구분) 또는 직접 입력")
         ans = self._ask(timeout=120)
         if not ans: return zone_list
@@ -250,7 +268,8 @@ class MacroThread(QThread):
             part = part.strip()
             try:
                 idx = int(part) - 1
-                if 0 <= idx < len(zone_list): selected.append(zone_list[idx])
+                if 0 <= idx < len(zone_list):
+                    selected.append(zone_list[idx])
             except:
                 if part: selected.append(part)
         return selected if selected else zone_list
@@ -267,8 +286,7 @@ class MacroThread(QThread):
             for seat in seats:
                 alt   = seat.get_attribute("alt")   or ""
                 title = seat.get_attribute("title") or ""
-                text  = (alt + title).upper()
-                if kw and kw not in text: continue
+                if kw and kw not in (alt + title).upper(): continue
                 drv.execute_script("arguments[0].click();", seat)
                 self.log(f"좌석 선택: {(alt or title)[:30]}")
                 self._wait(0.3); return True
@@ -281,7 +299,7 @@ class MacroThread(QThread):
         drv.switch_to.default_content()
         self._to_frame("ifrmSeat", "mainFrame")
         found = False
-        for sel in [".slider_wrap", ".puzzle_wrap", "[class*='slider']", "[class*='puzzle']"]:
+        for sel in [".slider_wrap",".puzzle_wrap","[class*='slider']","[class*='puzzle']"]:
             try:
                 if drv.find_element(By.CSS_SELECTOR, sel).is_displayed():
                     found = True; break
@@ -348,7 +366,8 @@ class MacroThread(QThread):
                         for area in drv.find_elements(By.TAG_NAME, "area"):
                             href = area.get_attribute("href") or ""
                             if zone.replace("영역","").strip() in href:
-                                drv.execute_script(href.replace("javascript:","")); clicked=True; break
+                                drv.execute_script(href.replace("javascript:",""))
+                                clicked = True; break
                     except: pass
                 self._wait(self.delay)
                 self._solve_puzzle()
@@ -356,7 +375,8 @@ class MacroThread(QThread):
                     drv.switch_to.default_content(); return
                 drv.switch_to.default_content()
             cycle += 1
-            if cycle % 5 == 0: self.log(f"구역 순회 {cycle}바퀴 완료...")
+            if cycle % 5 == 0:
+                self.log(f"구역 순회 {cycle}바퀴 완료...")
 
     # ── 좌석선택완료 ──────────────────────────
     def _click_complete(self):
@@ -369,13 +389,14 @@ class MacroThread(QThread):
             except: pass
         try:
             btn = drv.find_element(By.XPATH,
-                "//a[contains(text(),'좌석선택완료')]|//button[contains(text(),'좌석선택완료')]")
+                "//a[contains(text(),'좌석선택완료')]"
+                "|//button[contains(text(),'좌석선택완료')]")
             drv.execute_script("arguments[0].click();", btn)
         except: pass
         drv.switch_to.default_content()
         self._wait(1.5)
 
-    # ── 결제 대기 + 소리 알림 ─────────────────
+    # ── 결제 대기 ─────────────────────────────
     def _wait_payment(self):
         self.log("결제 페이지 대기 - 소리 알림 시작")
         def _beep():
@@ -402,30 +423,24 @@ class MacroThread(QThread):
             self.log("로그인을 완료해 주세요.")
             for _ in range(300):
                 self._wait(1)
-                src = self._src()
-                if self._has_captcha(src):
-                    self._solve_ansim_captcha(); continue
-                if self._is_login_done(): break
+                if self._is_logged_in(): break
             else:
                 self.log("로그인 대기 시간 초과"); return
             self.log("→ 로그인 완료")
 
-            # ② 예매 페이지 대기 (예매하기 클릭 후 캡챠 포함)
-            self.log("원하는 공연 페이지에서 [예매하기] 버튼을 눌러 주세요.")
-            BOOKING_KW = ["poticket", "Book", "motickets", "step2", "ticket"]
+            # ② 예매 페이지 대기
+            self.log("원하시는 링크에 들어가서 [예매하기] 버튼을 눌러 주세요.")
             for _ in range(1800):
                 self._wait(1)
-                src = self._src()
-                # 예매하기 클릭 후 안심예매 캡챠가 먼저 뜨는 경우
-                if self._has_captcha(src):
-                    self._solve_ansim_captcha()
-                    self._wait(1); continue
-                if any(k in self._url() for k in BOOKING_KW): break
+                url = self._url()
+                if "poticket" in url or "Book" in url or "motickets" in url:
+                    break
             self._wait(2)
 
-            # ③ 인터파크 iframe 캡챠
-            self._solve_iframe_captcha()
-            self._wait(0.5)
+            # ③ 안심예매 캡챠 처리
+            if self._captcha_visible():
+                self._handle_captcha()
+                self._wait(1)
 
             # ④ 좌석 등급 선택
             grade_idx = self._ask_grade()
@@ -466,8 +481,8 @@ class ControlWindow(QWidget):
         self._paused = False
 
         self._sig.log_signal.connect(self._on_log)
-        self._sig.input_signal.connect(self._show_input)
-        self._sig.input_hide.connect(self._hide_input)
+        self._sig.show_input.connect(self._show_input)
+        self._sig.hide_input.connect(self._hide_input)
 
         root = QVBoxLayout()
         root.setContentsMargins(8, 8, 8, 8)
@@ -483,7 +498,7 @@ class ControlWindow(QWidget):
         )
         root.addWidget(self.log_box)
 
-        # 입력 행 (숨김 상태)
+        # 입력 행 (기본 숨김)
         self.input_row = QWidget()
         rl = QHBoxLayout()
         rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(4)
@@ -502,7 +517,7 @@ class ControlWindow(QWidget):
         self.input_row.hide()
         root.addWidget(self.input_row)
 
-        # 버튼 행
+        # 중단/일시정지 버튼
         bl = QHBoxLayout(); bl.setSpacing(6)
         self.btn_stop = QPushButton("중단하기")
         self.btn_stop.setFixedHeight(32)
@@ -582,10 +597,14 @@ class LoginWindow(QWidget):
 
         root.addWidget(QLabel("로그인"))
 
-        # 탭
+        # 인터파크 / 카카오 / 네이버 탭
         tab_row = QHBoxLayout(); tab_row.setSpacing(0)
-        self._tab_btns = [QPushButton("인터파크"), QPushButton("카카오"), QPushButton("네이버")]
-        self._tab_grp  = QButtonGroup(self)
+        self._tab_btns = [
+            QPushButton("인터파크"),
+            QPushButton("카카오"),
+            QPushButton("네이버"),
+        ]
+        self._tab_grp = QButtonGroup(self)
         for i, b in enumerate(self._tab_btns):
             b.setCheckable(True); b.setFixedHeight(30)
             self._tab_grp.addButton(b, i); tab_row.addWidget(b)
