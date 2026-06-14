@@ -305,30 +305,53 @@ class MacroThread(QThread):
     # ── 좌석 클릭 ─────────────────────────────
     def _click_seat(self, grade_idx, grade_list=None):
         drv = self.driver
-        # motickets: 상세 페이지에서 예매 가능한(매진 아닌) 좌석 클릭
+        # 좌석 클릭 전 URL로 상세 페이지인지 확인
+        if not self._on_detail_page():
+            return False
+        # motickets: 회색(매진)이 아닌 색깔 있는 좌석만 클릭
+        # 회색 계열 fill: #ccc, #999, #aaa, #bbb, #ddd, #eee, gray, #c8c8c8 등
         js = r"""
-        function isSold(el){
+        var GRAY = /^(#[89a-f][0-9a-f]{2}|#[c-f]{1}[0-9a-f]{2}|gray|grey|#c[0-9a-f]{4}|#d[0-9a-f]{4}|#e[0-9a-f]{4}|#f0f0f0|#eeeeee|#dddddd|#cccccc|#bbbbbb|#aaaaaa|#999999)/i;
+        function isSoldByColor(el){
+            var fill = el.getAttribute('fill') || el.style.fill || '';
+            if (fill && GRAY.test(fill.trim())) return true;
+            // computed style
+            try {
+                var cs = window.getComputedStyle(el);
+                var cf = cs.fill || '';
+                // rgb(170,170,170) 계열 → 채도 낮으면 매진
+                var m = cf.match(/rgb\s*\(\s*(\d+),\s*(\d+),\s*(\d+)/);
+                if (m) {
+                    var r=+m[1], g=+m[2], b=+m[3];
+                    var diff = Math.max(r,g,b) - Math.min(r,g,b);
+                    if (diff < 25 && r > 140) return true; // 회색 계열
+                }
+            } catch(e){}
+            return false;
+        }
+        function isSoldByClass(el){
             var c = (el.className && el.className.baseVal!==undefined)
                     ? el.className.baseVal : (el.className||'');
             c = (''+c).toLowerCase();
-            if (c.indexOf('sold')>=0 || c.indexOf('disable')>=0 ||
-                c.indexOf('reserved')>=0 || c.indexOf('booked')>=0) return true;
-            if (el.getAttribute('aria-disabled')==='true') return true;
-            return false;
+            return (c.indexOf('sold')>=0 || c.indexOf('disable')>=0 ||
+                    c.indexOf('reserved')>=0 || c.indexOf('unavailab')>=0 ||
+                    c.indexOf('closed')>=0 || c.indexOf('none')>=0);
         }
-        // 좌석 후보 선택
+        // SVG 좌석(rect, circle, path, use)만 탐색
         var seats = document.querySelectorAll(
-            '[class*=seat], rect[data-seat], circle[data-seat], use, ' +
-            'rect[fill], circle[r], path[data-seat]');
+            'rect[fill], circle[fill], path[fill], ' +
+            'rect[class], circle[class], use[href], use[xlink\\:href]');
         var cands = [];
-        for (var i=0;i<seats.length;i++){
+        for (var i = 0; i < seats.length; i++) {
             var el = seats[i];
-            if (isSold(el)) continue;
+            if (isSoldByClass(el)) continue;
+            if (isSoldByColor(el)) continue;
+            if (el.getAttribute('aria-disabled') === 'true') continue;
             var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-            if (r && (r.width<2 || r.height<2)) continue;
+            if (!r || r.width < 3 || r.height < 3) continue;
             cands.push(el);
         }
-        if (cands.length===0) return 0;
+        if (cands.length === 0) return 0;
         cands[0].click();
         return cands.length;
         """
@@ -336,7 +359,18 @@ class MacroThread(QThread):
             n = drv.execute_script(js)
             if n and n > 0:
                 self.log(f"예매 가능 좌석 발견 → 클릭 (후보 {n}개)")
-                self._wait(0.3)
+                self._wait(1.0)
+                # 클릭 후 URL/팝업 변화가 없으면 실패로 처리
+                after_url = self._url()
+                if self._on_detail_page() and "select" not in after_url:
+                    # 좌석 선택 확인 팝업이나 URL 변화 기다리기
+                    for _ in range(8):
+                        self._wait(0.5)
+                        new_url = self._url()
+                        if new_url != after_url or not self._on_detail_page():
+                            return True
+                    # URL 변화 없으면 좌석 선택 안 된 것 → False
+                    return False
                 return True
         except Exception as e:
             self.log(f"좌석 클릭 오류: {e}")
@@ -524,18 +558,22 @@ class MacroThread(QThread):
         self._wait(1.5)
 
     # ── 결제 페이지 감지 ──────────────────────
-    # BookMain.asp 동일 URL이므로 페이지 소스(단계 표시)로 감지
+    # motickets: step3 이상 URL 또는 결제 전용 페이지로 이동했을 때만 감지
     def _is_payment_page(self):
         try:
-            src = self.driver.page_source
             url = self.driver.current_url
-            # 결제 단계 키워드
-            pay_kw = [
-                "가격/할인선택", "배송선택/주문자확인", "결제하기",
-                "다음단계", "이전단계", "주문금액", "결제수단",
-                "payment", "BookEnd", "order"
-            ]
-            return any(k in src or k in url for k in pay_kw)
+            # motickets 결제 단계: step3, payment, checkout, order 등
+            pay_url_kw = ["step3", "payment", "checkout", "order", "BookEnd",
+                          "poticket", "pay/"]
+            if any(k in url for k in pay_url_kw):
+                return True
+            # step2는 절대 결제 페이지 아님
+            if "step2" in url:
+                return False
+            # step2 아닌 다른 URL로 이동했고 결제 키워드가 소스에 있을 때
+            src = self.driver.page_source
+            pay_src_kw = ["주문금액", "결제수단", "최종결제금액", "결제하기"]
+            return any(k in src for k in pay_src_kw)
         except:
             return False
 
@@ -563,8 +601,9 @@ class MacroThread(QThread):
                 try:
                     url = self.driver.current_url
                     src = self.driver.page_source
-                    done_kw = ["BookEnd", "결제완료", "예매완료", "주문완료"]
-                    if any(k in url or k in src for k in done_kw):
+                    done_kw = ["BookEnd", "결제완료", "예매완료", "주문완료",
+                               "step3", "payment/complete"]
+                    if any(k in url for k in done_kw):
                         self.log("✅ 결제 완료!")
                         stop_ev.set(); return
                 except:
