@@ -518,17 +518,17 @@ class MacroThread(QThread):
             for _ in range(1800):
                 self._wait(1)
                 cur = self._cur_url()
+                src = self._page_src()
+                # 예매 대기 중 안심예매 캡챠가 뜨면 즉시 처리
+                if "문자를 입력해주세요" in src or "안심예매" in src:
+                    self._handle_page_captcha()
+                    self._wait(1)
+                    continue
                 if any(k in cur for k in BOOKING_KW):
                     break
             self._wait(1.5)
 
-            # 3) 안심예매 캡챠 (예매 페이지에서 뜨는 경우)
-            src = self._page_src()
-            if "문자를 입력해주세요" in src or "안심예매" in src:
-                self._handle_page_captcha()
-                self._wait(1)
-
-            # 4) iframe 캡챠
+            # 3) iframe 캡챠
             self._handle_iframe_captcha()
             self._wait(0.5)
 
