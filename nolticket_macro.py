@@ -33,6 +33,30 @@ LOGIN_URL   = (
 )
 GRADES = ["스탠딩R", "스탠딩S", "지정석R", "지정석S", "지정석A", "지정석B"]  # fallback only
 
+# ── KSPO DOME 좌석 배치 ──────────────────────────
+KSPO_DOME = {
+    "grades": ["스탠딩", "지정석 1F", "지정석 2F"],
+    "zones": {
+        "스탠딩": [
+            "가(001)", "나(002)", "다(003)", "라(004)", "FLOOR/FOH"
+        ],
+        "지정석 1F": [
+            "1구역", "2구역", "3구역", "4구역", "5구역",
+            "6구역", "7구역", "8구역", "9구역", "10구역",
+            "11구역", "12구역", "13구역", "14구역", "15구역",
+            "101구역", "102구역", "103구역", "104구역", "105구역",
+            "106구역", "107구역", "108구역", "109구역", "110구역",
+            "111구역", "112구역", "113구역", "114구역", "115구역",
+        ],
+        "지정석 2F": [
+            "224구역", "225구역", "226구역", "227구역", "228구역",
+            "229구역", "230구역", "231구역", "232구역", "233구역",
+            "234구역", "235구역", "236구역", "237구역", "238구역",
+            "239구역", "240구역", "241구역", "242구역", "243구역",
+        ],
+    },
+}
+
 
 # ───────────────────────────────────────────────
 #  신호 브릿지
@@ -227,29 +251,9 @@ class MacroThread(QThread):
 
         return False
 
-    # ── 페이지에서 등급 목록 읽기 ────────────
-    def _get_grades(self):
-        drv = self.driver
-        drv.switch_to.default_content()
-        self._to_frame("ifrmSeat", "mainFrame")
-        grades = []
-        try:
-            bs = BeautifulSoup(drv.page_source, "html.parser")
-            # 좌석 등급 테이블: class 에 grade/rank/class 포함하는 요소
-            for el in bs.find_all(["li", "tr", "td", "span", "div", "label"]):
-                t = el.get_text(strip=True)
-                # 등급 이름 패턴: VIP석, S석, A석, R석, 스탠딩, 지정석 등
-                if any(k in t for k in ["석", "스탠딩", "지정"]) and 2 <= len(t) <= 10:
-                    if t not in grades:
-                        grades.append(t)
-        except:
-            pass
-        drv.switch_to.default_content()
-        return grades if grades else GRADES
-
-    # ── 좌석 등급 선택 ────────────────────────
+    # ── 좌석 등급 선택 (KSPO DOME 고정) ─────
     def _ask_grade(self):
-        grade_list = self._get_grades()
+        grade_list = KSPO_DOME["grades"]
         self.log("좌석 등급을 입력해주세요:")
         self.log("1. 모두")
         for i, g in enumerate(grade_list, 2):
@@ -276,40 +280,20 @@ class MacroThread(QThread):
             except: pass
         return False
 
-    # ── 구역 목록 파싱 ────────────────────────
-    def _get_zones(self, grade_idx, grade_list=None):
-        drv = self.driver
-        drv.switch_to.default_content()
-        self._to_frame("ifrmSeat", "mainFrame")
-        gl = grade_list or GRADES
-        kw = gl[grade_idx - 1] if grade_idx >= 1 and grade_idx <= len(gl) else None
-        zones = []
-        try:
-            bs = BeautifulSoup(drv.page_source, "html.parser")
-            for area in bs.find_all("area"):
-                t = area.get("title") or area.get("alt") or ""
-                if t and (kw is None or kw in t):
-                    zones.append(t)
-            if not zones:
-                for el in bs.find_all(["span","td","li"]):
-                    t = el.get_text(strip=True)
-                    if "영역" in t or "구역" in t:
-                        zones.append(t)
-        except: pass
-        drv.switch_to.default_content()
-        seen, unique = set(), []
-        for z in zones:
-            if z not in seen: seen.add(z); unique.append(z)
-        return unique
-
-    # ── 구역 선택 ─────────────────────────────
+    # ── 구역 선택 (KSPO DOME 고정) ───────────
     def _ask_zones(self, grade_idx, grade_list=None):
-        zone_list = self._get_zones(grade_idx, grade_list)
-        if not zone_list:
-            self.log("구역 목록을 읽지 못했습니다. 직접 입력 (예: 001영역,002영역)")
+        gl = grade_list or KSPO_DOME["grades"]
+        if grade_idx >= 1 and grade_idx <= len(gl):
+            grade_name = gl[grade_idx - 1]
+            zone_list  = KSPO_DOME["zones"].get(grade_name, [])
         else:
-            for i, z in enumerate(zone_list, 1):
-                self.log(f"{i}. {z}")
+            # 모두 선택 → 전체 구역 합산
+            zone_list = []
+            for zl in KSPO_DOME["zones"].values():
+                zone_list.extend(zl)
+
+        for i, z in enumerate(zone_list, 1):
+            self.log(f"{i}. {z}")
         self.log("구역을 번호로 입력해주세요. ','로 구분하여 여러개 입력 가능합니다.")
         ans = self._ask(timeout=120)
         if not ans: return zone_list
@@ -405,11 +389,18 @@ class MacroThread(QThread):
                 self._wait(0)
                 drv.switch_to.default_content()
                 self._to_frame("ifrmSeat", "mainFrame")
+                # 구역 이름 정규화: "가(001)" → "001", "1구역" → "1"
+                zone_num = zone.replace("구역","").strip()
+                if "(" in zone_num:
+                    zone_num = zone_num.split("(")[-1].replace(")","").strip()
+
                 clicked = False
                 try:
                     for area in drv.find_elements(By.TAG_NAME, "area"):
-                        t = area.get_attribute("title") or area.get_attribute("alt") or ""
-                        if zone in t or t in zone:
+                        t = (area.get_attribute("title") or
+                             area.get_attribute("alt") or "")
+                        if (zone in t or t in zone or
+                                zone_num in t or t.strip() == zone_num):
                             drv.execute_script("arguments[0].click();", area)
                             clicked = True; break
                 except: pass
@@ -417,7 +408,7 @@ class MacroThread(QThread):
                     try:
                         for area in drv.find_elements(By.TAG_NAME, "area"):
                             href = area.get_attribute("href") or ""
-                            if zone.replace("영역","").strip() in href:
+                            if zone_num in href:
                                 drv.execute_script(href.replace("javascript:",""))
                                 clicked = True; break
                     except: pass
