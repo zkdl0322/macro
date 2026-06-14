@@ -419,24 +419,55 @@ class MacroThread(QThread):
         drv.switch_to.default_content()
         self._wait(1.5)
 
+    # ── 결제 페이지 감지 ──────────────────────
+    # BookMain.asp 동일 URL이므로 페이지 소스(단계 표시)로 감지
+    def _is_payment_page(self):
+        try:
+            src = self.driver.page_source
+            url = self.driver.current_url
+            # 결제 단계 키워드
+            pay_kw = [
+                "가격/할인선택", "배송선택/주문자확인", "결제하기",
+                "다음단계", "이전단계", "주문금액", "결제수단",
+                "payment", "BookEnd", "order"
+            ]
+            return any(k in src or k in url for k in pay_kw)
+        except:
+            return False
+
     # ── 결제 대기 ─────────────────────────────
     def _wait_payment(self):
-        self.log("결제 페이지 대기 - 소리 알림 시작")
-        def _beep():
-            for _ in range(10):
+        self.log("취소표를 잡았습니다! 결제 페이지 대기 중 - 소리 알림 시작")
+
+        def _beep_loop(stop_ev):
+            while not stop_ev.is_set():
                 try:
-                    winsound.Beep(1000, 400); time.sleep(0.15)
-                    winsound.Beep(1300, 400); time.sleep(0.3)
-                except: break
-        threading.Thread(target=_beep, daemon=True).start()
-        kw = ["payment","pay","order","checkout","BookEnd","완료"]
-        for _ in range(1800):
-            self._wait(1)
-            try:
-                if any(k in self.driver.current_url for k in kw):
-                    self.log("✅ 결제 완료!"); return
-            except: pass
-        self.log("결제 대기 시간 초과")
+                    winsound.Beep(1000, 400)
+                    time.sleep(0.15)
+                    winsound.Beep(1300, 400)
+                    time.sleep(0.5)
+                except:
+                    break
+
+        stop_ev = threading.Event()
+        threading.Thread(target=_beep_loop, args=(stop_ev,), daemon=True).start()
+
+        try:
+            # 최대 30분 대기
+            for _ in range(1800):
+                self._wait(1)
+                try:
+                    url = self.driver.current_url
+                    src = self.driver.page_source
+                    done_kw = ["BookEnd", "결제완료", "예매완료", "주문완료"]
+                    if any(k in url or k in src for k in done_kw):
+                        self.log("✅ 결제 완료!")
+                        stop_ev.set(); return
+                except:
+                    pass
+            self.log("결제 대기 시간 초과 (30분)")
+        finally:
+            stop_ev.set()
 
     # ── 메인 흐름 ─────────────────────────────
     def run(self):
@@ -480,7 +511,14 @@ class MacroThread(QThread):
             # ⑦ 좌석선택완료
             self._click_complete()
 
-            # ⑧ 결제 대기
+            # ⑦-② 결제 페이지 진입 대기 (가격/할인선택 단계)
+            self.log("결제 페이지 진입 대기 중...")
+            for _ in range(60):
+                self._wait(1)
+                if self._is_payment_page():
+                    break
+
+            # ⑧ 결제 대기 + 소리 알림
             self._wait_payment()
 
         except InterruptedError:
