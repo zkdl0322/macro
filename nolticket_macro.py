@@ -305,28 +305,46 @@ class MacroThread(QThread):
     # ── 좌석 클릭 ─────────────────────────────
     def _click_seat(self, grade_idx, grade_list=None):
         drv = self.driver
-        gl = grade_list or GRADES
-        kw = gl[grade_idx - 1].upper() if grade_idx >= 1 and grade_idx <= len(gl) else None
+        # motickets: 상세 페이지에서 예매 가능한(매진 아닌) 좌석 클릭
+        js = r"""
+        function isSold(el){
+            var c = (el.className && el.className.baseVal!==undefined)
+                    ? el.className.baseVal : (el.className||'');
+            c = (''+c).toLowerCase();
+            if (c.indexOf('sold')>=0 || c.indexOf('disable')>=0 ||
+                c.indexOf('reserved')>=0 || c.indexOf('booked')>=0) return true;
+            if (el.getAttribute('aria-disabled')==='true') return true;
+            return false;
+        }
+        // 좌석 후보 선택
+        var seats = document.querySelectorAll(
+            '[class*=seat], rect[data-seat], circle[data-seat], use, ' +
+            'rect[fill], circle[r], path[data-seat]');
+        var cands = [];
+        for (var i=0;i<seats.length;i++){
+            var el = seats[i];
+            if (isSold(el)) continue;
+            var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+            if (r && (r.width<2 || r.height<2)) continue;
+            cands.push(el);
+        }
+        if (cands.length===0) return 0;
+        cands[0].click();
+        return cands.length;
+        """
         try:
-            seats = drv.find_elements(
-                By.CSS_SELECTOR,
-                "img.stySeat, span[onclick*='Seat'], td[onclick*='Seat']"
-            )
-            for seat in seats:
-                alt   = seat.get_attribute("alt")   or ""
-                title = seat.get_attribute("title") or ""
-                if kw and kw not in (alt + title).upper(): continue
-                drv.execute_script("arguments[0].click();", seat)
-                self.log(f"좌석 선택: {(alt or title)[:30]}")
-                self._wait(0.3); return True
-        except: pass
+            n = drv.execute_script(js)
+            if n and n > 0:
+                self.log(f"예매 가능 좌석 발견 → 클릭 (후보 {n}개)")
+                self._wait(0.3)
+                return True
+        except Exception as e:
+            self.log(f"좌석 클릭 오류: {e}")
         return False
 
     # ── 퍼즐 슬라이더 ─────────────────────────
     def _solve_puzzle(self):
         drv = self.driver
-        drv.switch_to.default_content()
-        self._to_frame("ifrmSeat", "mainFrame")
         found = False
         for sel in [".slider_wrap",".puzzle_wrap","[class*='slider']","[class*='puzzle']"]:
             try:
@@ -336,7 +354,7 @@ class MacroThread(QThread):
         if not found:
             try: found = "슬라이더를 밀어" in drv.page_source
             except: pass
-        if not found: drv.switch_to.default_content(); return
+        if not found: return
 
         offset, bg_path, pc_path = 140, "puzzle_bg.png", "puzzle_pc.png"
         bg_el = pc_el = None
@@ -371,100 +389,138 @@ class MacroThread(QThread):
                 for _ in range(20): ac.move_by_offset(offset/20, 0).pause(0.02)
                 ac.release().perform(); self._wait(1.2)
             except Exception as e: self.log(f"슬라이더 오류: {e}")
-        drv.switch_to.default_content()
 
-    # ── 구역맵(좌석도 전체보기)으로 복귀 ──────
+    # ── 좌석 상세 페이지(detail)에 있는지 ─────
+    def _on_detail_page(self):
+        return "/detail" in self._url()
+
+    # ── 구역맵(step2)으로 복귀 ────────────────
+    # motickets: 좌상단 뒤로가기(←) 버튼 클릭, 실패 시 브라우저 back
     def _back_to_zonemap(self):
         drv = self.driver
-        drv.switch_to.default_content()
-        self._to_frame("ifrmSeat", "mainFrame")
-        # "좌석도 전체보기" / "전체보기" 버튼 클릭
+        if not self._on_detail_page():
+            return True
+        clicked = False
         for xp in [
-            "//a[contains(text(),'좌석도 전체보기')]",
-            "//button[contains(text(),'좌석도 전체보기')]",
-            "//a[contains(text(),'전체보기')]",
-            "//button[contains(text(),'전체보기')]",
-            "//*[contains(@onclick,'AllSeat')]",
-            "//*[contains(@onclick,'ZoneMap')]",
+            "//button[contains(@class,'back')]",
+            "//a[contains(@class,'back')]",
+            "//button[@aria-label='뒤로가기']",
+            "//button[@aria-label='뒤로']",
+            "//header//button[1]",
         ]:
             try:
                 el = drv.find_element(By.XPATH, xp)
-                drv.execute_script("arguments[0].click();", el)
-                self._wait(0.8)
-                drv.switch_to.default_content()
-                self._to_frame("ifrmSeat", "mainFrame")
-                return True
+                if el.is_displayed():
+                    drv.execute_script("arguments[0].click();", el)
+                    clicked = True; break
             except: pass
-        return False
+        if not clicked:
+            try: drv.back()
+            except: pass
+        # 구역맵 로딩 대기
+        for _ in range(20):
+            self._wait(0.2)
+            if not self._on_detail_page():
+                break
+        self._wait(0.5)
+        return not self._on_detail_page()
+
+    # ── 구역 클릭 (motickets SVG 맵, JS 텍스트 검색) ─
+    def _click_zone(self, zone_num):
+        drv = self.driver
+        js = r"""
+        var target = arguments[0];
+        function clickable(el){
+            for (var d=0; d<6 && el; d++){
+                var tag = (el.tagName||'').toLowerCase();
+                if (tag==='a' || tag==='button' || el.onclick ||
+                    el.getAttribute('role')==='button' ||
+                    (el.style && el.style.cursor==='pointer')){
+                    el.click(); return true;
+                }
+                el = el.parentElement;
+            }
+            return false;
+        }
+        // 1) 텍스트가 구역번호와 정확히 일치하는 요소
+        var nodes = document.querySelectorAll(
+            'text, tspan, a, g, span, div, li, button, path');
+        for (var i=0;i<nodes.length;i++){
+            var el = nodes[i];
+            var txt = (el.textContent||'').trim();
+            if (txt===target || txt===target+'구역' || txt===target+' 구역'){
+                if (clickable(el)) return true;
+                try { el.click(); return true; } catch(e){}
+            }
+        }
+        // 2) title / data 속성 매칭
+        var attrs = document.querySelectorAll(
+            '[title], [data-zone], [data-area], [data-block], [aria-label]');
+        for (var i=0;i<attrs.length;i++){
+            var el = attrs[i];
+            var t = (el.getAttribute('title')||el.getAttribute('data-zone')||
+                     el.getAttribute('data-area')||el.getAttribute('data-block')||
+                     el.getAttribute('aria-label')||'');
+            if (t.trim()===target || t.indexOf(target+'구역')>=0){
+                if (clickable(el)) return true;
+                try { el.click(); return true; } catch(e){}
+            }
+        }
+        return false;
+        """
+        try:
+            return bool(drv.execute_script(js, zone_num))
+        except:
+            return False
 
     # ── 구역 순회 ─────────────────────────────
     def _rotate_zones(self, zones, grade_idx, grade_list=None):
-        drv, cycle = self.driver, 0
+        cycle = 0
         self.log(f"구역 순회를 시작합니다 (딜레이 {self.delay}초)")
         while True:
             for zone in zones:
                 self._wait(0)
 
-                drv.switch_to.default_content()
-                self._to_frame("ifrmSeat", "mainFrame")
+                # 좌석 상세 뷰면 구역맵으로 복귀
+                if self._on_detail_page():
+                    self._back_to_zonemap()
 
-                # 구역맵에 area 태그가 없으면 = 좌석 상세 뷰 → 전체보기로 복귀
-                try:
-                    if len(drv.find_elements(By.TAG_NAME, "area")) == 0:
-                        self._back_to_zonemap()
-                except: pass
-
-                drv.switch_to.default_content()
-                self._to_frame("ifrmSeat", "mainFrame")
-
-                # 구역 이름 정규화: "가(001)" → "001", "1구역" → "1"
-                zone_num = zone.replace("구역","").strip()
+                # 구역번호 정규화: "가(001)"→"001", "105구역"→"105"
+                zone_num = zone.replace("구역", "").strip()
                 if "(" in zone_num:
-                    zone_num = zone_num.split("(")[-1].replace(")","").strip()
+                    zone_num = zone_num.split("(")[-1].replace(")", "").strip()
 
-                clicked = False
-                try:
-                    for area in drv.find_elements(By.TAG_NAME, "area"):
-                        t = (area.get_attribute("title") or
-                             area.get_attribute("alt") or "").strip()
-                        # 정확한 매칭만 허용 (부분 문자열 오인 방지)
-                        if t == zone or t == zone_num or t == zone_num + "구역":
-                            drv.execute_script("arguments[0].click();", area)
-                            clicked = True; break
-                except: pass
-                if not clicked:
-                    try:
-                        for area in drv.find_elements(By.TAG_NAME, "area"):
-                            href = area.get_attribute("href") or ""
-                            if zone_num in href:
-                                drv.execute_script(href.replace("javascript:",""))
-                                clicked = True; break
-                    except: pass
+                # 구역 클릭
+                if not self._click_zone(zone_num):
+                    continue
                 self._wait(self.delay)
+
+                # 퍼즐(있으면) 해제 후 좌석 클릭 시도
                 self._solve_puzzle()
                 if self._click_seat(grade_idx, grade_list):
-                    drv.switch_to.default_content(); return
-                drv.switch_to.default_content()
+                    return
             cycle += 1
             if cycle % 5 == 0:
                 self.log(f"구역 순회 {cycle}바퀴 완료...")
 
-    # ── 좌석선택완료 ──────────────────────────
+    # ── 좌석선택완료 / 다음단계 ───────────────
     def _click_complete(self):
         drv = self.driver
         self.log("좌석선택완료 클릭")
-        drv.switch_to.default_content()
-        self._to_frame("ifrmSeat", "mainFrame")
-        for fn in ["fnSelect()", "fnComplete()", "fnSelectSeat()"]:
-            try: drv.execute_script(fn); self._wait(0.5); break
+        for xp in [
+            "//a[contains(text(),'좌석선택완료')]",
+            "//button[contains(text(),'좌석선택완료')]",
+            "//button[contains(text(),'선택완료')]",
+            "//button[contains(text(),'다음')]",
+            "//a[contains(text(),'다음')]",
+            "//button[contains(text(),'선택완료')]",
+        ]:
+            try:
+                btn = drv.find_element(By.XPATH, xp)
+                if btn.is_displayed():
+                    drv.execute_script("arguments[0].click();", btn)
+                    break
             except: pass
-        try:
-            btn = drv.find_element(By.XPATH,
-                "//a[contains(text(),'좌석선택완료')]"
-                "|//button[contains(text(),'좌석선택완료')]")
-            drv.execute_script("arguments[0].click();", btn)
-        except: pass
-        drv.switch_to.default_content()
         self._wait(1.5)
 
     # ── 결제 페이지 감지 ──────────────────────
