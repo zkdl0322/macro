@@ -305,9 +305,6 @@ class MacroThread(QThread):
     # ── 좌석 클릭 ─────────────────────────────
     def _click_seat(self, grade_idx, grade_list=None):
         drv = self.driver
-        # 좌석 클릭 전 URL로 상세 페이지인지 확인
-        if not self._on_detail_page():
-            return False
         # motickets: 회색(매진)이 아닌 색깔 있는 좌석만 클릭
         # 회색 계열 fill: #ccc, #999, #aaa, #bbb, #ddd, #eee, gray, #c8c8c8 등
         js = r"""
@@ -459,12 +456,36 @@ class MacroThread(QThread):
         self._wait(0.5)
         return not self._on_detail_page()
 
-    # ── 구역 클릭 (motickets SVG 맵, JS 텍스트 검색) ─
+    # ── 구역 클릭 (iframe area 태그 + JS 겸용) ──
     def _click_zone(self, zone_num):
         drv = self.driver
+        # 1) BookMain.asp (iframe) - area 태그로 클릭
+        try:
+            drv.switch_to.default_content()
+            self._to_frame("ifrmSeat", "mainFrame")
+            for area in drv.find_elements(By.TAG_NAME, "area"):
+                t = (area.get_attribute("title") or
+                     area.get_attribute("alt") or "").strip()
+                if t == zone_num or t == zone_num + "구역" or t == zone_num + "영역":
+                    drv.execute_script("arguments[0].click();", area)
+                    drv.switch_to.default_content()
+                    return True
+            # href 방식
+            for area in drv.find_elements(By.TAG_NAME, "area"):
+                href = area.get_attribute("href") or ""
+                if zone_num in href:
+                    drv.execute_script(href.replace("javascript:", ""))
+                    drv.switch_to.default_content()
+                    return True
+            drv.switch_to.default_content()
+        except:
+            try: drv.switch_to.default_content()
+            except: pass
+
+        # 2) motickets (SPA) - JS 텍스트/속성 검색
         js = r"""
         var target = arguments[0];
-        function clickable(el){
+        function tryClick(el){
             for (var d=0; d<6 && el; d++){
                 var tag = (el.tagName||'').toLowerCase();
                 if (tag==='a' || tag==='button' || el.onclick ||
@@ -476,28 +497,19 @@ class MacroThread(QThread):
             }
             return false;
         }
-        // 1) 텍스트가 구역번호와 정확히 일치하는 요소
-        var nodes = document.querySelectorAll(
-            'text, tspan, a, g, span, div, li, button, path');
+        var nodes = document.querySelectorAll('text,tspan,a,g,span,div,li,button,path');
         for (var i=0;i<nodes.length;i++){
-            var el = nodes[i];
-            var txt = (el.textContent||'').trim();
-            if (txt===target || txt===target+'구역' || txt===target+' 구역'){
-                if (clickable(el)) return true;
-                try { el.click(); return true; } catch(e){}
+            var txt=(nodes[i].textContent||'').trim();
+            if(txt===target||txt===target+'구역'||txt===target+'영역'){
+                if(tryClick(nodes[i])) return true;
             }
         }
-        // 2) title / data 속성 매칭
-        var attrs = document.querySelectorAll(
-            '[title], [data-zone], [data-area], [data-block], [aria-label]');
-        for (var i=0;i<attrs.length;i++){
-            var el = attrs[i];
-            var t = (el.getAttribute('title')||el.getAttribute('data-zone')||
-                     el.getAttribute('data-area')||el.getAttribute('data-block')||
-                     el.getAttribute('aria-label')||'');
-            if (t.trim()===target || t.indexOf(target+'구역')>=0){
-                if (clickable(el)) return true;
-                try { el.click(); return true; } catch(e){}
+        var attrs=document.querySelectorAll('[title],[data-zone],[data-area],[aria-label]');
+        for(var i=0;i<attrs.length;i++){
+            var t=(attrs[i].getAttribute('title')||attrs[i].getAttribute('data-zone')||
+                   attrs[i].getAttribute('data-area')||attrs[i].getAttribute('aria-label')||'');
+            if(t.trim()===target||t===target+'구역'||t===target+'영역'){
+                if(tryClick(attrs[i])) return true;
             }
         }
         return false;
@@ -514,44 +526,39 @@ class MacroThread(QThread):
         self.log(f"구역 순회를 시작합니다 (딜레이 {self.delay}초)")
         while True:
             for zone in zones:
-                # 정지/일시정지 체크
                 self._wait(0)
-                # 브라우저 세션이 살아있는지 확인
+                # 브라우저 세션 생존 확인
                 try:
                     _ = self.driver.current_url
                 except Exception:
                     self.log("브라우저가 종료되어 순회를 중단합니다."); return
-                # 구역 하나에서 오류가 나도 순회를 멈추지 않도록 격리
-                try:
-                    # 좌석 상세 뷰면 구역맵으로 복귀
-                    if self._on_detail_page():
-                        self._back_to_zonemap()
 
-                    # 구역번호 정규화: "가(001)"→"001", "105구역"→"105"
-                    zone_num = zone.replace("구역", "").strip()
+                try:
+                    # 구역번호 정규화: "가(001)"→"001", "206영역"→"206", "105구역"→"105"
+                    zone_num = zone.replace("구역", "").replace("영역", "").strip()
                     if "(" in zone_num:
                         zone_num = zone_num.split("(")[-1].replace(")", "").strip()
 
-                    # 구역 클릭
+                    # 구역 클릭 (실패해도 다음 구역으로)
                     if not self._click_zone(zone_num):
                         continue
-                    self._wait(self.delay)
 
-                    # 퍼즐(있으면) 해제 후 좌석 클릭 시도
+                    self._wait(self.delay)
                     self._solve_puzzle()
+
+                    # 예매 가능 좌석 클릭 → 성공하면 순회 종료
                     if self._click_seat(grade_idx, grade_list):
                         return
                     consecutive_err = 0
+
                 except InterruptedError:
                     raise
                 except Exception as e:
-                    # 일시적 오류는 로그만 남기고 다음 구역으로
                     consecutive_err += 1
-                    self.log(f"구역 처리 오류(건너뜀): {str(e)[:60]}")
+                    self.log(f"구역 오류(건너뜀): {str(e)[:60]}")
                     if consecutive_err >= 15:
                         self.log("오류가 계속되어 순회를 중단합니다."); return
                     self._wait(0.5)
-                    continue
             cycle += 1
             if cycle % 5 == 0:
                 self.log(f"구역 순회 {cycle}바퀴 완료...")
