@@ -426,41 +426,6 @@ class MacroThread(QThread):
                 ac.release().perform(); self._wait(1.2)
             except Exception as e: self.log(f"슬라이더 오류: {e}")
 
-    # ── 좌석 상세 페이지(detail)에 있는지 ─────
-    def _on_detail_page(self):
-        return "/detail" in self._url()
-
-    # ── 구역맵(step2)으로 복귀 ────────────────
-    # motickets: 좌상단 뒤로가기(←) 버튼 클릭, 실패 시 브라우저 back
-    def _back_to_zonemap(self):
-        drv = self.driver
-        if not self._on_detail_page():
-            return True
-        clicked = False
-        for xp in [
-            "//button[contains(@class,'back')]",
-            "//a[contains(@class,'back')]",
-            "//button[@aria-label='뒤로가기']",
-            "//button[@aria-label='뒤로']",
-            "//header//button[1]",
-        ]:
-            try:
-                el = drv.find_element(By.XPATH, xp)
-                if el.is_displayed():
-                    drv.execute_script("arguments[0].click();", el)
-                    clicked = True; break
-            except: pass
-        if not clicked:
-            try: drv.back()
-            except: pass
-        # 구역맵 로딩 대기
-        for _ in range(20):
-            self._wait(0.2)
-            if not self._on_detail_page():
-                break
-        self._wait(0.5)
-        return not self._on_detail_page()
-
     # ── 구역 클릭 (iframe area 태그 + JS 겸용) ──
     def _click_zone(self, zone_num):
         drv = self.driver
