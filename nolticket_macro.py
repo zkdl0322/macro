@@ -349,7 +349,12 @@ class MacroThread(QThread):
             cands.push(el);
         }
         if (cands.length === 0) return 0;
-        cands[0].click();
+        // SVG 요소는 .click()이 없으므로 dispatchEvent 사용
+        var el = cands[0];
+        try { el.click(); } catch(e) {
+            el.dispatchEvent(new MouseEvent('click',
+                {bubbles:true, cancelable:true, view:window}));
+        }
         return cands.length;
         """
         try:
