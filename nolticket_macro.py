@@ -34,28 +34,39 @@ LOGIN_URL   = (
 GRADES = ["스탠딩R", "스탠딩S", "지정석R", "지정석S", "지정석A", "지정석B"]  # fallback only
 
 # ── KSPO DOME 좌석 배치 ──────────────────────────
-# 각 구역은 3자리 코드(101~115, 224~243)로 식별됨
-#  - 스탠딩(FLOOR): 가(001) 나(002) 다(003) 라(004)
-#  - 지정석 1F: 101~115 (총 15구역)
-#  - 지정석 2F: 224~243 (총 20구역)
 KSPO_DOME = {
-    "grades": ["스탠딩", "지정석 1F", "지정석 2F"],
+    "grades": ["스탠딩 VIP석", "지정석 VIP석", "지정석 R석", "지정석 S석"],
     "zones": {
-        "스탠딩": [
-            "가(001)", "나(002)", "다(003)", "라(004)"
-        ],
-        "지정석 1F": [
+        "스탠딩 VIP석": ["A(001)", "B(002)"],
+        "지정석 VIP석": [
             "101구역", "102구역", "103구역", "104구역", "105구역",
             "106구역", "107구역", "108구역", "109구역", "110구역",
             "111구역", "112구역", "113구역", "114구역", "115구역",
         ],
-        "지정석 2F": [
+        "지정석 R석": [
+            "101구역", "102구역", "103구역", "104구역", "105구역",
+            "106구역", "107구역", "108구역", "109구역", "110구역",
+            "111구역", "112구역", "113구역", "114구역", "115구역",
+        ],
+        "지정석 S석": [
+            "101구역", "102구역", "103구역", "104구역", "105구역",
+            "106구역", "107구역", "108구역", "109구역", "110구역",
+            "111구역", "112구역", "113구역", "114구역", "115구역",
             "224구역", "225구역", "226구역", "227구역", "228구역",
             "229구역", "230구역", "231구역", "232구역", "233구역",
             "234구역", "235구역", "236구역", "237구역", "238구역",
             "239구역", "240구역", "241구역", "242구역", "243구역",
         ],
     },
+}
+
+# 등급별 좌석 색상 (RGB 범위)
+# 스탠딩 VIP석: 보라, 지정석 VIP석: 초록, 지정석 R석: 파랑, 지정석 S석: 주황
+GRADE_COLOR = {
+    "스탠딩 VIP석": "purple",
+    "지정석 VIP석": "green",
+    "지정석 R석":   "blue",
+    "지정석 S석":   "orange",
 }
 
 
@@ -244,7 +255,7 @@ class MacroThread(QThread):
 
         return False
 
-    # ── 좌석 등급 선택 (KSPO DOME 고정) ─────
+    # ── 좌석 등급 선택 ───────────────────────
     def _ask_grade(self):
         grade_list = KSPO_DOME["grades"]
         self.log("좌석 등급을 입력해주세요:")
@@ -306,76 +317,87 @@ class MacroThread(QThread):
     def _click_seat(self, grade_idx, grade_list=None):
         drv = self.driver
         # motickets: 회색(매진)이 아닌 색깔 있는 좌석만 클릭
-        # 회색 계열 fill: #ccc, #999, #aaa, #bbb, #ddd, #eee, gray, #c8c8c8 등
-        js = r"""
-        var GRAY = /^(#[89a-f][0-9a-f]{2}|#[c-f]{1}[0-9a-f]{2}|gray|grey|#c[0-9a-f]{4}|#d[0-9a-f]{4}|#e[0-9a-f]{4}|#f0f0f0|#eeeeee|#dddddd|#cccccc|#bbbbbb|#aaaaaa|#999999)/i;
-        function isSoldByColor(el){
-            var fill = el.getAttribute('fill') || el.style.fill || '';
-            if (fill && GRAY.test(fill.trim())) return true;
-            // computed style
+        # 등급별 색상 조건 (computed RGB 기준)
+        # 스탠딩 VIP석: 보라 / 지정석 VIP석: 초록 / 지정석 R석: 파랑 / 지정석 S석: 주황
+        gl = grade_list or KSPO_DOME["grades"]
+        target_color = "any"
+        if grade_idx >= 1 and grade_idx <= len(gl):
+            target_color = GRADE_COLOR.get(gl[grade_idx - 1], "any")
+
+        js = """
+        var targetColor = arguments[0];
+        function getRGB(el){
             try {
                 var cs = window.getComputedStyle(el);
-                var cf = cs.fill || '';
-                // rgb(170,170,170) 계열 → 채도 낮으면 매진
-                var m = cf.match(/rgb\s*\(\s*(\d+),\s*(\d+),\s*(\d+)/);
-                if (m) {
-                    var r=+m[1], g=+m[2], b=+m[3];
-                    var diff = Math.max(r,g,b) - Math.min(r,g,b);
-                    if (diff < 25 && r > 140) return true; // 회색 계열
-                }
+                var f = cs.fill || el.getAttribute('fill') || '';
+                var m = f.match(/rgb\\s*\\(\\s*(\\d+),\\s*(\\d+),\\s*(\\d+)/);
+                if(m) return {r:+m[1],g:+m[2],b:+m[3]};
+                // hex
+                var h = f.replace('#','');
+                if(h.length===3) h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+                if(h.length===6) return {
+                    r:parseInt(h.slice(0,2),16),
+                    g:parseInt(h.slice(2,4),16),
+                    b:parseInt(h.slice(4,6),16)};
             } catch(e){}
+            return null;
+        }
+        function isGray(r,g,b){
+            return Math.max(r,g,b)-Math.min(r,g,b)<30 && r>130;
+        }
+        function matchColor(rgb){
+            if(!rgb) return false;
+            var r=rgb.r, g=rgb.g, b=rgb.b;
+            if(isGray(r,g,b)) return false;
+            if(targetColor==='any') return !isGray(r,g,b);
+            if(targetColor==='purple') return b>130 && r>100 && g<130 && b>g;
+            if(targetColor==='green')  return g>140 && g>r+40 && g>b+40;
+            if(targetColor==='blue')   return b>140 && b>r+30 && (b>g || (g>140&&b>140));
+            if(targetColor==='orange') return r>170 && g>80 && g<180 && b<100;
             return false;
         }
         function isSoldByClass(el){
-            var c = (el.className && el.className.baseVal!==undefined)
-                    ? el.className.baseVal : (el.className||'');
-            c = (''+c).toLowerCase();
-            return (c.indexOf('sold')>=0 || c.indexOf('disable')>=0 ||
-                    c.indexOf('reserved')>=0 || c.indexOf('unavailab')>=0 ||
-                    c.indexOf('closed')>=0 || c.indexOf('none')>=0);
+            var c=(el.className&&el.className.baseVal!==undefined)
+                  ?el.className.baseVal:(el.className||'');
+            c=(''+c).toLowerCase();
+            return c.indexOf('sold')>=0||c.indexOf('disable')>=0||
+                   c.indexOf('reserved')>=0||c.indexOf('unavailab')>=0;
         }
-        // SVG 좌석(rect, circle, path, use)만 탐색
         var seats = document.querySelectorAll(
-            'rect[fill], circle[fill], path[fill], ' +
-            'rect[class], circle[class], use[href], use[xlink\\:href]');
+            'rect[fill], circle[fill], path[fill], rect[class], circle[class]');
         var cands = [];
-        for (var i = 0; i < seats.length; i++) {
-            var el = seats[i];
-            if (isSoldByClass(el)) continue;
-            if (isSoldByColor(el)) continue;
-            if (el.getAttribute('aria-disabled') === 'true') continue;
-            var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-            if (!r || r.width < 3 || r.height < 3) continue;
+        for(var i=0;i<seats.length;i++){
+            var el=seats[i];
+            if(el.getAttribute('aria-disabled')==='true') continue;
+            if(isSoldByClass(el)) continue;
+            var bnd=el.getBoundingClientRect?el.getBoundingClientRect():null;
+            if(!bnd||bnd.width<3||bnd.height<3) continue;
+            var rgb=getRGB(el);
+            if(!matchColor(rgb)) continue;
             cands.push(el);
         }
-        if (cands.length === 0) return 0;
-        // SVG 요소는 .click()이 없으므로 dispatchEvent 사용
-        var el = cands[0];
-        try { el.click(); } catch(e) {
-            el.dispatchEvent(new MouseEvent('click',
-                {bubbles:true, cancelable:true, view:window}));
+        if(cands.length===0) return 0;
+        var picked=cands[0];
+        try { picked.click(); } catch(e){
+            picked.dispatchEvent(new MouseEvent('click',
+                {bubbles:true,cancelable:true,view:window}));
         }
         return cands.length;
         """
         try:
-            n = drv.execute_script(js)
+            n = drv.execute_script(js, target_color)
             if n and n > 0:
-                self.log(f"예매 가능 좌석 발견 → 클릭 (후보 {n}개)")
-                self._wait(1.0)
-                # 클릭 후 URL/팝업 변화가 없으면 실패로 처리
-                after_url = self._url()
-                if self._on_detail_page() and "select" not in after_url:
-                    # 좌석 선택 확인 팝업이나 URL 변화 기다리기
-                    for _ in range(8):
-                        self._wait(0.5)
-                        new_url = self._url()
-                        if new_url != after_url or not self._on_detail_page():
-                            return True
-                    # URL 변화 없으면 좌석 선택 안 된 것 → False
-                    return False
-                return True
+                self.log(f"[{target_color}] 예매 가능 좌석 발견 → 클릭 (후보 {n}개)")
+                self._wait(1.2)
+                # 하단에 좌석 선택 정보가 나타났는지 확인
+                src = self._src()
+                if "티켓가격선택" in src or "총" in src:
+                    return True
+                # 잠시 더 기다려도 나타나지 않으면 실패
+                self._wait(0.8)
+                return "티켓가격선택" in self._src() or "총" in self._src()
         except Exception as e:
-            self.log(f"좌석 클릭 오류: {e}")
+            self.log(f"좌석 클릭 오류: {str(e)[:80]}")
         return False
 
     # ── 퍼즐 슬라이더 ─────────────────────────
@@ -533,22 +555,23 @@ class MacroThread(QThread):
             if cycle % 5 == 0:
                 self.log(f"구역 순회 {cycle}바퀴 완료...")
 
-    # ── 좌석선택완료 / 다음단계 ───────────────
+    # ── 티켓가격선택 클릭 ────────────────────
     def _click_complete(self):
         drv = self.driver
-        self.log("좌석선택완료 클릭")
+        self.log("티켓가격선택 클릭")
         for xp in [
-            "//a[contains(text(),'좌석선택완료')]",
+            "//button[contains(text(),'티켓가격선택')]",
+            "//a[contains(text(),'티켓가격선택')]",
+            "//button[contains(text(),'가격선택')]",
             "//button[contains(text(),'좌석선택완료')]",
             "//button[contains(text(),'선택완료')]",
             "//button[contains(text(),'다음')]",
-            "//a[contains(text(),'다음')]",
-            "//button[contains(text(),'선택완료')]",
         ]:
             try:
                 btn = drv.find_element(By.XPATH, xp)
                 if btn.is_displayed():
                     drv.execute_script("arguments[0].click();", btn)
+                    self.log(f"→ 클릭 완료")
                     break
             except: pass
         self._wait(1.5)
