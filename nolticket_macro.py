@@ -534,6 +534,9 @@ class MacroThread(QThread):
     # ── 구역 선택 (등급 prefix로 필터링) ──────
     def _ask_zones(self, grade=None):
         all_zones = self._get_zones()
+        # 디버그: 첫 10개 구역의 prefix 로그
+        for z in all_zones[:10]:
+            self.log(f"  [DEBUG] {z.get('label')} prefix={z.get('grade_prefix')}")
         grade_name = (grade or {}).get('name', '')
 
         # 등급명 첫 글자(S/A/B/C/D)를 grade_prefix와 매칭
