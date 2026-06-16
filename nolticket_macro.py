@@ -770,11 +770,16 @@ class MacroThread(QThread):
         except:
             return False
 
+    # ── 열린 패널 닫기 (좌석닫기 / 닫기 공용) ──
+    def _close_any_panel(self):
+        closed = self._click_text_button(["좌석닫기", "닫기", "Close"])
+        if closed:
+            self._wait(0.4)
+
     # ── 좌석 클릭 ─────────────────────────────
     # 같은 구역 안에서 예매 가능 좌석을 하나씩 순서대로 시도.
     # 성공(티켓가격선택 확인) 시 True, 구역 내 모든 좌석 실패 시 False.
     def _click_seat(self, grade=None):
-        drv = self.driver
         target = (grade or {}).get("color")
         gname  = (grade or {}).get("name", "모두")
 
@@ -796,7 +801,8 @@ class MacroThread(QThread):
             if "티켓가격선택" in src or "총" in src:
                 self._close_seat_panel()
                 return True
-            # 이 좌석은 선택 안 됨 → 다음 좌석 시도
+            # 이 좌석 실패 → 열린 패널 닫고 다음 좌석 시도
+            self._close_any_panel()
         return False
 
     # ── 퍼즐 슬라이더 ─────────────────────────
@@ -949,7 +955,8 @@ class MacroThread(QThread):
                         self._click_complete()
                         return
 
-                    # ⑤ 빈 좌석 없음 → 다음 구역으로
+                    # ⑤ 빈 좌석 없음 → 열린 패널 닫고 다음 구역으로
+                    self._close_any_panel()
                     consecutive_err = 0
 
                 except InterruptedError:
@@ -1107,13 +1114,9 @@ class MacroThread(QThread):
                 self.log("로그인 대기 시간 초과"); return
             self.log("→ 로그인 완료")
 
-            # 로그인 후 accounts.yanolja.com/myaccount 등으로 가있으면
-            # NOL 메인(nol.yanolja.com)으로 확실히 도달할 때까지 반복 이동
-            for _try in range(6):
-                cur = self._url()
-                # 이미 NOL 메인/티켓 도메인이면 종료
-                if "nol.yanolja.com" in cur or "nol.interpark.com" in cur:
-                    break
+            # 로그인 후 아직 accounts 도메인에 있으면 NOL 메인으로 1회 이동
+            cur = self._url()
+            if "nol.yanolja.com" not in cur and "nol.interpark.com" not in cur:
                 try:
                     self.log("→ NOL 메인(nol.yanolja.com)으로 이동")
                     self.driver.get("https://nol.yanolja.com/")
@@ -1135,11 +1138,12 @@ class MacroThread(QThread):
                 self._handle_captcha()
                 self._wait(1)
 
-            # ④ 좌석 등급 선택 (페이지에서 동적으로 읽음)
-            grade, grade_list = self._ask_grade()
+            # ④ 좌석 등급 내부 읽기 (사용자에게 묻지 않음)
+            grade_list = self._get_grades()
+            grade = None  # 등급 필터 없이 전체 좌석 대상
             self._wait(0.3)
 
-            # ⑤ 구역 선택 (선택한 등급 색상으로 필터링)
+            # ⑤ 구역 선택
             zones = self._ask_zones(grade)
             self.log(f"선택 구역: {', '.join(zones) if zones else '전체'}")
             self._wait(0.3)
