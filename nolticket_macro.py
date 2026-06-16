@@ -451,18 +451,12 @@ class MacroThread(QThread):
         return best
 
     def _imagemap_zones_all_frames(self):
-        """PNG 이미지맵에서 area 좌표 중심의 이미지 픽셀 색을 샘플링 (모든 iframe 탐색)"""
+        """PNG 이미지맵: 요소 스크린샷을 PIL로 샘플링해 area별 색 추출 (CORS 우회, 모든 iframe 탐색)"""
         drv = self.driver
         best, best_colored = [], -1
-        def _try():
-            try:
-                res = drv.execute_script(self._imagemap_js()) or []
-            except:
-                res = []
-            return res
         try: drv.switch_to.default_content()
         except: pass
-        r = _try(); c = sum(1 for z in r if z.get('color'))
+        r = self._imagemap_zones_screenshot(); c = sum(1 for z in r if z.get('color'))
         if c > best_colored: best, best_colored = r, c
         try:
             frames = drv.find_elements(By.TAG_NAME, "iframe")
@@ -472,7 +466,7 @@ class MacroThread(QThread):
             try:
                 drv.switch_to.default_content()
                 drv.switch_to.frame(fr)
-                r = _try(); c = sum(1 for z in r if z.get('color'))
+                r = self._imagemap_zones_screenshot(); c = sum(1 for z in r if z.get('color'))
                 if c > best_colored: best, best_colored = r, c
             except:
                 pass
@@ -480,58 +474,70 @@ class MacroThread(QThread):
         except: pass
         return best
 
-    def _imagemap_js(self):
-        # <area> 좌표의 중심점에서 연결된 <img>의 픽셀 색을 canvas로 샘플링
-        return r"""
-        function centroid(coords, shape){
-            var n=coords.length;
-            if(shape==='circle'){ return [coords[0], coords[1]]; }
-            if(shape==='rect'){ return [(coords[0]+coords[2])/2, (coords[1]+coords[3])/2]; }
-            var sx=0, sy=0, k=0;
-            for(var i=0;i+1<n;i+=2){ sx+=coords[i]; sy+=coords[i+1]; k++; }
-            return k? [sx/k, sy/k] : null;
-        }
-        var out=[];
-        var maps=document.querySelectorAll('map');
-        for(var mi=0; mi<maps.length; mi++){
-            var map=maps[mi];
-            var name=map.getAttribute('name');
-            var img=document.querySelector('img[usemap="#'+name+'"]');
-            if(!img) img=document.querySelector('img[usemap=#'+name+']');
-            if(!img) continue;
-            var nw=img.naturalWidth, nh=img.naturalHeight;
-            if(!nw||!nh) continue;
-            var cv=document.createElement('canvas');
-            cv.width=nw; cv.height=nh;
-            var ctx=cv.getContext('2d');
-            try{ ctx.drawImage(img,0,0,nw,nh); }catch(e){ continue; }
-            // area 좌표는 표시된 크기 기준일 수 있어 자연 크기로 스케일
-            var sx=nw/(img.width||nw), sy=nh/(img.height||nh);
-            var areas=map.querySelectorAll('area');
-            for(var ai=0; ai<areas.length; ai++){
-                var a=areas[ai];
-                var label=(a.getAttribute('title')||a.getAttribute('alt')||'').trim();
-                if(!label) continue;
-                var shape=(a.getAttribute('shape')||'poly').toLowerCase();
-                var cs=(a.getAttribute('coords')||'').split(/[, ]+/).map(Number).filter(function(x){return !isNaN(x);});
-                if(cs.length<2) continue;
-                var cen=centroid(cs, shape);
-                if(!cen) continue;
-                var px=Math.round(cen[0]*sx), py=Math.round(cen[1]*sy);
-                if(px<0||py<0||px>=nw||py>=nh) continue;
-                var color=null;
-                try{
-                    var d=ctx.getImageData(px,py,1,1).data;
-                    var r=d[0],g=d[1],b=d[2],al=d[3];
-                    if(al>10 && !(r>240&&g>240&&b>240) && !(r<14&&g<14&&b<14)){
-                        color=[r,g,b];
-                    }
-                }catch(e){ color=null; }
-                out.push({label:label, color:color});
-            }
-        }
-        return out;
-        """
+    def _imagemap_zones_screenshot(self):
+        """현재 프레임의 <map>/<img>에서 요소 스크린샷을 찍어 area 중심 픽셀 색 샘플링"""
+        import io, re as _re
+        drv = self.driver
+        out = []
+        try:
+            maps = drv.find_elements(By.TAG_NAME, "map")
+        except:
+            return out
+        for mp in maps:
+            name = mp.get_attribute("name")
+            if not name:
+                continue
+            img = None
+            for sel in (f'img[usemap="#{name}"]', f"img[usemap='#{name}']"):
+                try:
+                    img = drv.find_element(By.CSS_SELECTOR, sel); break
+                except:
+                    pass
+            if img is None:
+                continue
+            try:
+                nw = int(drv.execute_script("return arguments[0].naturalWidth", img) or 0)
+                nh = int(drv.execute_script("return arguments[0].naturalHeight", img) or 0)
+            except:
+                nw = nh = 0
+            if not nw or not nh:
+                continue
+            try:
+                png = img.screenshot_as_png
+                im = Image.open(io.BytesIO(png)).convert("RGB")
+                arr = np.asarray(im)
+            except Exception as e:
+                self.log(f"[이미지맵] 스크린샷 실패: {str(e)[:60]}")
+                continue
+            sh, sw = arr.shape[0], arr.shape[1]
+            sx, sy = sw / nw, sh / nh
+            try:
+                areas = mp.find_elements(By.TAG_NAME, "area")
+            except:
+                areas = []
+            for a in areas:
+                label = (a.get_attribute("title") or a.get_attribute("alt") or "").strip()
+                if not label:
+                    continue
+                shape = (a.get_attribute("shape") or "poly").lower()
+                nums = [float(x) for x in _re.split(r"[,\s]+", (a.get_attribute("coords") or "").strip()) if x]
+                if len(nums) < 2:
+                    continue
+                if shape == "circle":
+                    cx, cy = nums[0], nums[1]
+                elif shape == "rect" and len(nums) >= 4:
+                    cx, cy = (nums[0] + nums[2]) / 2, (nums[1] + nums[3]) / 2
+                else:
+                    xs = nums[0::2]; ys = nums[1::2]
+                    cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+                px = min(max(int(cx * sx), 0), sw - 1)
+                py = min(max(int(cy * sy), 0), sh - 1)
+                r, g, b = (int(v) for v in arr[py, px][:3])
+                color = None
+                if not (r > 240 and g > 240 and b > 240) and not (r < 14 and g < 14 and b < 14):
+                    color = [r, g, b]
+                out.append({"label": label, "color": color})
+        return out
 
     def _svg_zone_js(self):
         # motickets (SVG) - 구역 번호 텍스트 위치에서 깔린 색칠 도형 색상 추출
