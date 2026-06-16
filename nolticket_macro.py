@@ -556,6 +556,25 @@ class MacroThread(QThread):
                     pass
             try: drv.switch_to.default_content()
             except: pass
+
+        # 3) 폴백: "가001" 형식의 한글+숫자 라벨도 탐색
+        if not zones:
+            js_fallback = r"""
+            var out=[], seen={};
+            var nodes=document.querySelectorAll('text,tspan,span,div,a,g');
+            for(var i=0;i<nodes.length;i++){
+                var tx=(nodes[i].textContent||'').trim();
+                // "가001", "나002" 등: 끝에 숫자 2~3자리
+                var m=tx.match(/^[가-힣]?(\d{2,3})$/);
+                if(m&&!seen[m[1]]){
+                    seen[m[1]]=1;
+                    out.push({label:m[1], color:null});
+                }
+            }
+            return out;
+            """
+            zones = self._run_zone_js(js_fallback)
+
         return self._dedup_zones(zones)
 
     def _run_zone_js(self, js):
@@ -778,18 +797,37 @@ class MacroThread(QThread):
         except:
             return False
 
-    # ── 열린 패널 닫기 (좌석닫기 / 닫기 공용) ──
-    def _close_any_panel(self):
-        closed = self._click_text_button(["좌석닫기", "닫기", "Close"])
-        if closed:
-            self._wait(0.4)
+    # ── 등급 섹션 펼치기 ─────────────────────────
+    # 잔여좌석보기 패널에서 선택한 등급 행을 클릭해 좌석 목록을 펼친다.
+    def _expand_grade_section(self, grade_name):
+        js = r"""
+        var name = arguments[0];
+        var nodes = document.querySelectorAll('*');
+        for (var i=0; i<nodes.length; i++){
+            var el = nodes[i];
+            var txt = (el.textContent||'').trim();
+            if (txt !== name && txt.indexOf(name) !== 0) continue;
+            var bnd = el.getBoundingClientRect();
+            if (bnd.width < 20 || bnd.height < 10) continue;
+            // 자식 개수가 적을수록 섹션 헤더에 가까움
+            if (el.querySelectorAll('*').length > 30) continue;
+            el.click(); return true;
+        }
+        return false;
+        """
+        try: self.driver.execute_script(js, grade_name)
+        except: pass
 
     # ── 좌석 클릭 ─────────────────────────────
-    # 같은 구역 안에서 예매 가능 좌석을 하나씩 순서대로 시도.
-    # 성공(티켓가격선택 확인) 시 True, 구역 내 모든 좌석 실패 시 False.
+    # 잔여좌석보기 패널에서 선택 등급 섹션을 펼친 뒤 좌석을 순서대로 시도.
     def _click_seat(self, grade=None):
         target = (grade or {}).get("color")
         gname  = (grade or {}).get("name", "모두")
+
+        # 선택 등급 섹션 펼치기 (접혀있으면 클릭)
+        if gname and gname != "모두":
+            self._expand_grade_section(gname)
+            self._wait(0.6)
 
         total = self._find_seat_candidates(target)
         if total == 0:
@@ -798,7 +836,7 @@ class MacroThread(QThread):
         self.log(f"[{gname}] 예매 가능 좌석 {total}개 발견 → 순서대로 시도")
         for idx in range(total):
             if not self._click_seat_at(target, idx):
-                break   # 후보 목록이 바뀐 경우
+                break
             self._wait(1.0)
             src = self._src()
             if "티켓가격선택" in src or "총" in src:
@@ -809,8 +847,6 @@ class MacroThread(QThread):
             if "티켓가격선택" in src or "총" in src:
                 self._close_seat_panel()
                 return True
-            # 이 좌석 실패 → 열린 패널 닫고 다음 좌석 시도
-            self._close_any_panel()
         return False
 
     # ── 퍼즐 슬라이더 ─────────────────────────
@@ -924,10 +960,18 @@ class MacroThread(QThread):
         except:
             return False
 
+    # ── 지도로 복귀 ──────────────────────────────
+    def _back_to_map(self):
+        # 좌석닫기가 열려있으면 먼저 닫기
+        self._click_text_button(["좌석닫기"])
+        self._wait(0.3)
+        # ← 버튼 클릭
+        self._close_zone_panel()
+        self._wait(0.5)
+
     # ── 구역 순회 ─────────────────────────────
-    # 흐름: 구역 클릭 → 좌석 배치도 로딩 → 가능 좌석 클릭
-    #       성공: 좌석닫기 → 티켓가격선택 → 종료
-    #       실패: ← 버튼으로 지도 복귀 → 다음 구역
+    # 흐름: (지도에서) 구역 클릭 → 잔여좌석보기 클릭 → 등급 섹션 펼치기
+    #       → 좌석 클릭 → 성공: 티켓가격선택 / 실패: ← 복귀 → 다음 구역
     def _rotate_zones(self, zones, grade=None):
         self.log(f"구역 순회 시작 (딜레이 {self.delay}초)")
         cycle = 0
@@ -937,34 +981,36 @@ class MacroThread(QThread):
             for zone in zones:
                 self._wait(0)
 
-                # 브라우저 세션 생존 확인
                 try:
                     _ = self.driver.current_url
                 except Exception:
                     self.log("브라우저가 종료되어 순회를 중단합니다."); return
 
                 try:
-                    # 구역번호 정규화: "가(001)"→"001", "206영역"→"206"
                     zone_num = zone.replace("구역", "").replace("영역", "").strip()
                     if "(" in zone_num:
                         zone_num = zone_num.split("(")[-1].replace(")", "").strip()
 
-                    # ① 구역 클릭 (실패 시 다음 구역으로)
+                    # ① 지도에서 구역 클릭
                     if not self._click_zone(zone_num):
+                        self.log(f"구역 {zone_num} 클릭 실패 → 건너뜀")
                         continue
 
-                    # ② 좌석 배치도 로딩 대기 + 퍼즐 처리
+                    # ② 로딩 대기 + 퍼즐 처리
                     self._wait(self.delay)
                     self._solve_puzzle()
 
-                    # ③ 예매 가능 좌석 클릭
+                    # ③ 잔여좌석보기 클릭 → 등급별 좌석 패널 열기
+                    self._click_text_button(["잔여좌석보기"])
+                    self._wait(0.8)
+
+                    # ④ 좌석 클릭 시도 (등급 섹션 펼치기 포함)
                     if self._click_seat(grade):
-                        # ④ 좌석 선택 성공 → 티켓가격선택 클릭 후 종료
                         self._click_complete()
                         return
 
-                    # ⑤ 빈 좌석 없음 → 열린 패널 닫고 다음 구역으로
-                    self._close_any_panel()
+                    # ⑤ 빈 좌석 없음 → 좌석닫기 + ← 으로 지도 복귀
+                    self._back_to_map()
                     consecutive_err = 0
 
                 except InterruptedError:
@@ -974,6 +1020,8 @@ class MacroThread(QThread):
                     self.log(f"구역 오류(건너뜀): {str(e)[:60]}")
                     if consecutive_err >= 15:
                         self.log("오류가 계속되어 순회를 중단합니다."); return
+                    try: self._back_to_map()
+                    except: pass
                     self._wait(0.5)
 
             cycle += 1
