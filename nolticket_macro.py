@@ -949,8 +949,7 @@ class MacroThread(QThread):
                         self._click_complete()
                         return
 
-                    # ⑤ 빈 좌석 없음 → ← 버튼으로 지도 복귀
-                    self._close_zone_panel()
+                    # ⑤ 빈 좌석 없음 → 다음 구역으로
                     consecutive_err = 0
 
                 except InterruptedError:
@@ -960,7 +959,6 @@ class MacroThread(QThread):
                     self.log(f"구역 오류(건너뜀): {str(e)[:60]}")
                     if consecutive_err >= 15:
                         self.log("오류가 계속되어 순회를 중단합니다."); return
-                    self._close_zone_panel()
                     self._wait(0.5)
 
             cycle += 1
