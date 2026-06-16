@@ -296,10 +296,8 @@ class MacroThread(QThread):
             var t=(all[i].textContent||'').replace(/\s+/g,'').trim();
             for(var k=0;k<labels.length;k++){
                 if(t===labels[k]){
-                    var e=all[i];
-                    // 두 탭을 감싸는 부모까지 숨김
-                    for(var d=0;d<2&&e.parentElement;d++) e=e.parentElement;
-                    e.style.display='none'; hidden=true;
+                    // 탭 버튼 자체만 숨김 (부모로 올라가지 않음)
+                    all[i].style.display='none'; hidden=true;
                 }
             }
         }
