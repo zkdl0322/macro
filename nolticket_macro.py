@@ -237,6 +237,51 @@ class MacroThread(QThread):
             except: pass
         return False
 
+    # ── 좌석가격(등급) 패널 닫기 ─────────────
+    # 좌석을 잡은 뒤 가격표 이미지를 숨겨 잡은 좌석이 보이도록 함
+    def _close_price_panel(self):
+        drv = self.driver
+        # 1) '잔여좌석보기' 탭으로 전환 (가격표 → 좌석배치도)
+        for xp in [
+            "//*[contains(text(),'잔여좌석보기')]",
+            "//*[contains(text(),'좌석보기')]",
+        ]:
+            try:
+                el = drv.find_element(By.XPATH, xp)
+                if el.is_displayed():
+                    drv.execute_script("arguments[0].click();", el)
+                    self._wait(0.4)
+                    return True
+            except: pass
+        # 2) 닫기 버튼 / 가격보기 토글 다시 클릭
+        for sel in [
+            "//*[contains(text(),'가격보기')]",
+            "//button[contains(@class,'close')]",
+            "//*[contains(@class,'price') and contains(@class,'close')]",
+        ]:
+            try:
+                el = drv.find_element(By.XPATH, sel)
+                if el.is_displayed():
+                    drv.execute_script("arguments[0].click();", el)
+                    self._wait(0.4)
+                    return True
+            except: pass
+        # 3) JS로 가격 패널 요소 직접 숨김
+        js = r"""
+        var sels=['.price_view','.seat_price','[class*="priceView"]',
+                  '[class*="seatPrice"]','[class*="price_layer"]','[class*="legend"]'];
+        var hidden=false;
+        for(var s=0;s<sels.length;s++){
+            var els=document.querySelectorAll(sels[s]);
+            for(var i=0;i<els.length;i++){
+                els[i].style.display='none'; hidden=true;
+            }
+        }
+        return hidden;
+        """
+        try: return bool(drv.execute_script(js))
+        except: return False
+
     # ── 등급 목록 + 색상 동적 읽기 ────────────
     def _get_grades(self):
         drv = self.driver
@@ -513,9 +558,13 @@ class MacroThread(QThread):
                 self._wait(1.2)
                 # 하단에 좌석 선택 정보(티켓가격선택/총 N매)가 나타났는지 확인
                 if "티켓가격선택" in self._src() or "총" in self._src():
+                    self._close_price_panel()  # 가격표 숨겨 잡은 좌석 보이게
                     return True
                 self._wait(0.8)
-                return "티켓가격선택" in self._src() or "총" in self._src()
+                if "티켓가격선택" in self._src() or "총" in self._src():
+                    self._close_price_panel()
+                    return True
+                return False
         except Exception as e:
             self.log(f"좌석 클릭 오류: {str(e)[:80]}")
         return False
