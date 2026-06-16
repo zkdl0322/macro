@@ -400,20 +400,40 @@ class MacroThread(QThread):
             except: pass
         if zones:
             return self._dedup_zones(zones)
-        # 2) motickets (SVG) - 구역 번호 텍스트 + 부모 fill 색상
+        # 2) motickets (SVG) - 구역 번호 텍스트 위치에서 깔린 색칠 도형 색상 추출
         js = r"""
-        function getFill(el){
-            for(var d=0,e=el;d<8&&e;d++,e=e.parentElement){
-                var cs=window.getComputedStyle(e);
-                var f=cs.fill||e.getAttribute('fill')||'';
-                if(!f&&e.style) f=e.style.fill||e.style.backgroundColor||'';
-                if(!f) f=cs.backgroundColor||'';
-                var m=f.match(/(\d+),\s*(\d+),\s*(\d+)/);
-                if(m){
-                    var r=+m[1],g=+m[2],b=+m[3];
-                    if(r>245&&g>245&&b>245) continue;  // 흰색
-                    if(r<12&&g<12&&b<12) continue;     // 검정
-                    return [r,g,b];
+        function parseColor(f){
+            if(!f) return null;
+            var m=f.match(/(\d+),\s*(\d+),\s*(\d+)/);
+            if(!m) return null;
+            var r=+m[1],g=+m[2],b=+m[3];
+            if(r>240&&g>240&&b>240) return null;  // 흰색
+            if(r<14&&g<14&&b<14) return null;      // 검정
+            if(Math.abs(r-g)<10&&Math.abs(g-b)<10&&Math.abs(r-b)<10) return null; // 회색
+            return [r,g,b];
+        }
+        function elFill(e){
+            if(!e) return null;
+            var cs=window.getComputedStyle(e);
+            return parseColor(cs.fill) || parseColor((e.getAttribute&&e.getAttribute('fill'))||'')
+                || parseColor((e.style&&e.style.fill)||'') || parseColor(cs.backgroundColor);
+        }
+        // 라벨 텍스트 중심점 아래에 깔린 색칠 도형을 찾는다
+        function colorAt(el){
+            var r=el.getBoundingClientRect();
+            var cx=r.left+r.width/2, cy=r.top+r.height/2;
+            var stack=document.elementsFromPoint(cx,cy)||[];
+            for(var i=0;i<stack.length;i++){
+                var c=elFill(stack[i]);
+                if(c) return c;
+            }
+            // fallback: 형제 path/polygon
+            var p=el.parentElement;
+            if(p){
+                var sib=p.querySelectorAll('path,polygon,rect,circle');
+                for(var j=0;j<sib.length;j++){
+                    var c2=elFill(sib[j]);
+                    if(c2) return c2;
                 }
             }
             return null;
@@ -425,7 +445,7 @@ class MacroThread(QThread):
             if(/^[A-Z가-힣]?\d{1,3}$/.test(t)||/^[A-Z가-힣]$/.test(t)){
                 if(!seen[t]){
                     seen[t]=1;
-                    out.push({label:t, color:getFill(nodes[i])});
+                    out.push({label:t, color:colorAt(nodes[i])});
                 }
             }
         }
@@ -454,6 +474,9 @@ class MacroThread(QThread):
     def _ask_zones(self, grade=None):
         all_zones = self._get_zones()
         grade_color = (grade or {}).get('color')
+
+        colored = sum(1 for z in all_zones if z.get('color'))
+        self.log(f"[구역] 총 {len(all_zones)}개 중 색상 인식 {colored}개 (등급색상 {grade_color})")
 
         # 등급 색상이 있고, 구역에도 색상 정보가 있으면 필터링
         if grade_color and any(z.get('color') for z in all_zones):
