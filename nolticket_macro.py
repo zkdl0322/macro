@@ -237,25 +237,27 @@ class MacroThread(QThread):
             except: pass
         return False
 
-    # ── 좌석가격(등급) 패널 닫기 ─────────────
-    # 좌석을 잡은 뒤 가격표 이미지를 숨겨 잡은 좌석이 보이도록 함
+    # ── 가격표 / 잔여좌석 패널 닫고 좌석배치도만 표시 ──
+    # 유저에게는 '좌석배치도'만 보여준다.
+    # 좌석가격보기·잔여좌석보기 패널은 매크로가 읽은 뒤 숨김.
     def _close_price_panel(self):
         drv = self.driver
-        # 1) '잔여좌석보기' 탭으로 전환 (가격표 → 좌석배치도)
+        # 1) '좌석배치도' 탭으로 전환
         for xp in [
-            "//*[contains(text(),'잔여좌석보기')]",
-            "//*[contains(text(),'좌석보기')]",
+            "//*[contains(text(),'좌석배치도')]",
+            "//*[contains(text(),'배치도')]",
         ]:
             try:
                 el = drv.find_element(By.XPATH, xp)
                 if el.is_displayed():
                     drv.execute_script("arguments[0].click();", el)
                     self._wait(0.4)
-                    return True
+                    break
             except: pass
-        # 2) 닫기 버튼 / 가격보기 토글 다시 클릭
+        # 2) 가격보기/잔여좌석보기 토글·닫기 버튼 클릭
         for sel in [
             "//*[contains(text(),'가격보기')]",
+            "//*[contains(text(),'잔여좌석보기')]",
             "//button[contains(@class,'close')]",
             "//*[contains(@class,'price') and contains(@class,'close')]",
         ]:
@@ -263,13 +265,14 @@ class MacroThread(QThread):
                 el = drv.find_element(By.XPATH, sel)
                 if el.is_displayed():
                     drv.execute_script("arguments[0].click();", el)
-                    self._wait(0.4)
-                    return True
+                    self._wait(0.3)
             except: pass
-        # 3) JS로 가격 패널 요소 직접 숨김
+        # 3) JS로 가격·잔여좌석 패널 요소 직접 숨김 (좌석배치도는 유지)
         js = r"""
         var sels=['.price_view','.seat_price','[class*="priceView"]',
-                  '[class*="seatPrice"]','[class*="price_layer"]','[class*="legend"]'];
+                  '[class*="seatPrice"]','[class*="price_layer"]','[class*="legend"]',
+                  '[class*="remainSeat"]','[class*="remain_seat"]',
+                  '[class*="restSeat"]','[class*="rest_seat"]'];
         var hidden=false;
         for(var s=0;s<sels.length;s++){
             var els=document.querySelectorAll(sels[s]);
