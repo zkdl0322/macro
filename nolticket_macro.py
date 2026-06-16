@@ -426,85 +426,65 @@ class MacroThread(QThread):
             except: pass
         return False
 
-    # ── 구역 목록 동적 읽기 (label + color) ─────
-    # 반환: [{'label': '101', 'color': [r,g,b] or None}, ...]
+    # ── 구역 목록 동적 읽기 ─────────────────────
+    # 반환: [{'label': '001', 'grade_prefix': 'S'}, ...]
+    # motickets SVG: "S-1\n001" 같이 등급prefix-번호 + 3자리번호가 한 그룹에 있음.
+    # 등급 prefix(S/A/B…)를 함께 추출해 필터링에 사용.
     def _get_zones(self):
         drv = self.driver
         zones = []
-        # 1) BookMain.asp (iframe) - area 태그 title/alt (색상 없음)
+        # 1) BookMain.asp (iframe) - area 태그 title/alt
         try:
             drv.switch_to.default_content()
             self._to_frame("ifrmSeat", "mainFrame")
             for a in drv.find_elements(By.TAG_NAME, "area"):
                 t = (a.get_attribute("title") or a.get_attribute("alt") or "").strip()
-                if t: zones.append({'label': t, 'color': None})
+                if t: zones.append({'label': t, 'grade_prefix': None})
             drv.switch_to.default_content()
         except:
             try: drv.switch_to.default_content()
             except: pass
         if zones:
             return self._dedup_zones(zones)
-        # 2) motickets (SVG/HTML)
-        #    라벨(001,101 등) 텍스트를 먼저 찾고, 그 부모/형제 도형의
-        #    fill/배경색을 읽어 등급 색상과 짝지음.
+
+        # 2) motickets SVG: 구역 블록 안에 "S-1" + "001" 두 텍스트가 같이 있음.
+        #    큰 그룹(g/a/div) 기준으로 긁어서 prefix + 번호 짝지음.
         js = r"""
-        function toRGB(s){
-            if(!s) return null;
-            var m=s.match(/(\d+),\s*(\d+),\s*(\d+)/);
-            if(m) return [+m[1],+m[2],+m[3]];
-            var h=s.replace(/^#/,'');
-            if(h.length===3) h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
-            if(h.length===6) return [parseInt(h.slice(0,2),16),
-                                     parseInt(h.slice(2,4),16),
-                                     parseInt(h.slice(4,6),16)];
-            return null;
-        }
-        function colorOf(el){
-            if(!el) return null;
-            var cs=window.getComputedStyle(el);
-            var cands=[el.getAttribute&&el.getAttribute('fill'), cs.fill,
-                       cs.backgroundColor, (el.style&&el.style.fill)];
-            for(var k=0;k<cands.length;k++){
-                var rgb=toRGB(cands[k]||'');
-                if(!rgb) continue;
-                var r=rgb[0],g=rgb[1],b=rgb[2];
-                if(r>245&&g>245&&b>245) continue;   // 흰색
-                if(r<12&&g<12&&b<12) continue;      // 검정
-                return rgb;
-            }
-            return null;
-        }
-        // 라벨 노드 기준으로 자신→형제도형→부모 순서로 색을 찾음
-        function findColor(textEl){
-            var node=textEl;
-            for(var d=0; d<5 && node; d++){
-                var c=colorOf(node);
-                if(c) return c;
-                var par=node.parentElement;
-                if(par){
-                    var shapes=par.querySelectorAll('rect,polygon,path,circle');
-                    for(var i=0;i<shapes.length;i++){
-                        var cc=colorOf(shapes[i]);
-                        if(cc) return cc;
-                    }
-                }
-                node=node.parentElement;
-            }
-            return null;
-        }
         var out=[], seen={};
-        var nodes=document.querySelectorAll('text,tspan,a,g,span,div,li,td');
-        for(var i=0;i<nodes.length;i++){
-            var t=(nodes[i].textContent||'').trim();
-            if(/^[A-Z가-힣]?\d{1,3}$/.test(t)||/^[A-Z가-힣]$/.test(t)){
-                if(seen[t]) continue;
-                seen[t]=1;
-                out.push({label:t, color:findColor(nodes[i])});
+        // 후보 컨테이너: g, a, div, td 등 크기가 큰 요소
+        var containers = document.querySelectorAll('g,a,div,td,li');
+        for(var i=0;i<containers.length;i++){
+            var el=containers[i];
+            var bnd=el.getBoundingClientRect?el.getBoundingClientRect():null;
+            if(!bnd||bnd.width<20||bnd.height<15) continue;
+            var texts=el.querySelectorAll('text,tspan,span,div,p');
+            var prefix=null, num=null;
+            for(var j=0;j<texts.length;j++){
+                var tx=(texts[j].textContent||'').trim();
+                // "S-1", "A-3", "B-2" 형태 → 등급prefix
+                var pm=tx.match(/^([A-Z])-\d+$/);
+                if(pm){ prefix=pm[1]; continue; }
+                // "001", "023" 형태 → 구역번호
+                if(/^\d{3}$/.test(tx)){ num=tx; }
+            }
+            if(num && !seen[num]){
+                seen[num]=1;
+                out.push({label:num, grade_prefix:prefix});
+            }
+        }
+        // prefix가 없는 경우 단순 3자리 숫자 텍스트로 폴백
+        if(out.length===0){
+            var nodes=document.querySelectorAll('text,tspan,span,div,li,td');
+            for(var i=0;i<nodes.length;i++){
+                var t=(nodes[i].textContent||'').trim();
+                if(/^\d{1,3}$/.test(t) && !seen[t]){
+                    seen[t]=1;
+                    out.push({label:t, grade_prefix:null});
+                }
             }
         }
         return out;
         """
-        # default content + 모든 iframe 안에서 시도
         zones = self._run_zone_js(js)
         if not zones:
             try:
@@ -542,23 +522,27 @@ class MacroThread(QThread):
                 seen.add(x); out.append(x)
         return out
 
-    # ── 구역 선택 (등급 색상으로 필터링) ──────
+    # ── 구역 선택 (등급 prefix로 필터링) ──────
     def _ask_zones(self, grade=None):
         all_zones = self._get_zones()
-        grade_color = (grade or {}).get('color')
+        grade_name = (grade or {}).get('name', '')
 
-        # 등급 색상이 있고, 구역에도 색상 정보가 있으면 필터링
-        if grade_color and any(z.get('color') for z in all_zones):
-            def _color_match(zc):
-                if not zc: return False
-                d = abs(zc[0]-grade_color[0]) + abs(zc[1]-grade_color[1]) + abs(zc[2]-grade_color[2])
-                return d <= 90
-            filtered = [z for z in all_zones if _color_match(z.get('color'))]
+        # 등급명 첫 글자(S/A/B/C/D)를 grade_prefix와 매칭
+        # 예: "S석" → prefix "S", "A석" → "A"
+        prefix = None
+        if grade_name:
+            import re
+            m = re.match(r'([A-Z])', grade_name)
+            if m:
+                prefix = m.group(1)
+
+        if prefix and any(z.get('grade_prefix') for z in all_zones):
+            filtered = [z for z in all_zones if z.get('grade_prefix') == prefix]
             if filtered:
-                self.log(f"[등급 필터] {grade['name']} 색상에 맞는 구역 {len(filtered)}개 표시")
+                self.log(f"[등급 필터] {grade_name} 구역 {len(filtered)}개")
                 zone_list = filtered
             else:
-                self.log("색상 필터링 결과 없음 → 전체 구역 표시")
+                self.log("prefix 필터링 결과 없음 → 전체 구역 표시")
                 zone_list = all_zones
         else:
             zone_list = all_zones
