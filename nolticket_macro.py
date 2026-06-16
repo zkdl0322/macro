@@ -866,13 +866,19 @@ class MacroThread(QThread):
                 self.log("로그인 대기 시간 초과"); return
             self.log("→ 로그인 완료")
 
-            # 로그인 후 myaccount 등으로 가있으면 NOL 메인으로 이동
-            try:
-                if "nol.yanolja.com" not in self._url():
+            # 로그인 후 accounts.yanolja.com/myaccount 등으로 가있으면
+            # NOL 메인(nol.yanolja.com)으로 확실히 도달할 때까지 반복 이동
+            for _try in range(6):
+                cur = self._url()
+                # 이미 NOL 메인/티켓 도메인이면 종료
+                if "nol.yanolja.com" in cur or "nol.interpark.com" in cur:
+                    break
+                try:
                     self.log("→ NOL 메인(nol.yanolja.com)으로 이동")
                     self.driver.get("https://nol.yanolja.com/")
-                    self._wait(2)
-            except: pass
+                    self._wait(2.5)
+                except:
+                    self._wait(1)
 
             # ② 예매 페이지 대기
             self.log("원하시는 링크에 들어가서 [예매하기] 버튼을 눌러 주세요.")
