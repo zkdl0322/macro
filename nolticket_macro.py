@@ -544,19 +544,44 @@ class MacroThread(QThread):
                     continue
                 if shape == "circle":
                     cx, cy = nums[0], nums[1]
+                    rr = nums[2] if len(nums) > 2 else 8
+                    x0n, x1n, y0n, y1n = cx - rr, cx + rr, cy - rr, cy + rr
                 elif shape == "rect" and len(nums) >= 4:
-                    cx, cy = (nums[0] + nums[2]) / 2, (nums[1] + nums[3]) / 2
+                    x0n, x1n = min(nums[0], nums[2]), max(nums[0], nums[2])
+                    y0n, y1n = min(nums[1], nums[3]), max(nums[1], nums[3])
                 else:
                     xs = nums[0::2]; ys = nums[1::2]
-                    cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
-                px = min(max(int(cx * sx), 0), sw - 1)
-                py = min(max(int(cy * sy), 0), sh - 1)
-                r, g, b = (int(v) for v in arr[py, px][:3])
-                color = None
-                if not (r > 240 and g > 240 and b > 240) and not (r < 14 and g < 14 and b < 14):
-                    color = [r, g, b]
+                    x0n, x1n, y0n, y1n = min(xs), max(xs), min(ys), max(ys)
+                # 자연좌표 bbox → 스크린샷 좌표로 스케일
+                x0 = min(max(int(x0n * sx), 0), sw - 1); x1 = min(max(int(x1n * sx), 0), sw - 1)
+                y0 = min(max(int(y0n * sy), 0), sh - 1); y1 = min(max(int(y1n * sy), 0), sh - 1)
+                if x1 <= x0 or y1 <= y0:
+                    out.append({"label": label, "color": None}); continue
+                color = self._dominant_color(arr[y0:y1 + 1, x0:x1 + 1])
                 out.append({"label": label, "color": color})
         return out
+
+    def _dominant_color(self, region):
+        """영역에서 흰/검/회색을 제외한 가장 흔한 색(최빈색) 반환"""
+        try:
+            px = region.reshape(-1, region.shape[-1])[:, :3].astype(int)
+        except:
+            return None
+        r, g, b = px[:, 0], px[:, 1], px[:, 2]
+        mx = np.maximum(np.maximum(r, g), b); mn = np.minimum(np.minimum(r, g), b)
+        mask = ~((r > 235) & (g > 235) & (b > 235))      # 흰색 제외
+        mask &= ~((r < 25) & (g < 25) & (b < 25))         # 검정 제외
+        mask &= (mx - mn) > 25                             # 회색 제외 (채도 있는 색만)
+        sel = px[mask]
+        if sel.shape[0] == 0:
+            return None
+        # 16단계로 양자화 후 최빈색 그룹의 평균
+        q = (sel // 16) * 16
+        keys = q[:, 0] * 1000000 + q[:, 1] * 1000 + q[:, 2]
+        vals, counts = np.unique(keys, return_counts=True)
+        top = vals[counts.argmax()]
+        member = sel[keys == top]
+        return [int(member[:, 0].mean()), int(member[:, 1].mean()), int(member[:, 2].mean())]
 
     def _svg_zone_js(self):
         # motickets (SVG) - 구역 번호 텍스트 위치에서 깔린 색칠 도형 색상 추출
