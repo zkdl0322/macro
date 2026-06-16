@@ -521,15 +521,47 @@ class MacroThread(QThread):
                 self.log(f"[이미지맵] naturalSize 0 (nw={nw} nh={nh})")
                 continue
             try:
-                png = img.screenshot_as_png
-                im = Image.open(io.BytesIO(png)).convert("RGB")
-                arr = np.asarray(im)
-            except Exception as e:
-                self.log(f"[이미지맵] 스크린샷 실패: {str(e)[:60]}")
+                irect = img.rect  # 프레임 문서 기준 x,y,width,height (CSS px)
+            except:
+                irect = None
+            if not irect or not irect.get('width'):
+                self.log("[이미지맵] img rect 없음")
                 continue
+            # usemap img가 투명 오버레이일 수 있으므로 img/부모/조부모를 후보로 색이 있는 요소 선택
+            cands = [img]
+            for xp in ("..", "../.."):
+                try: cands.append(img.find_element(By.XPATH, xp))
+                except: pass
+            chosen = None
+            for cand in cands:
+                try:
+                    png = cand.screenshot_as_png
+                    a = np.asarray(Image.open(io.BytesIO(png)).convert("RGB"))
+                except Exception as e:
+                    self.log(f"[이미지맵] 스크린샷 실패: {str(e)[:40]}")
+                    continue
+                whole = self._dominant_color(a)
+                self.log(f"[이미지맵] 후보 shot={a.shape[1]}x{a.shape[0]} 전체색={whole}")
+                if whole is not None:
+                    chosen = (cand, a); break
+            if chosen is None:
+                self.log("[이미지맵] 색 있는 후보 없음")
+                continue
+            cand, arr = chosen
             sh, sw = arr.shape[0], arr.shape[1]
-            sx, sy = sw / nw, sh / nh
-            self.log(f"[이미지맵] natural={nw}x{nh} shot={sw}x{sh}")
+            try:
+                crect = cand.rect
+            except:
+                crect = irect
+            ratio = (sw / crect['width']) if crect.get('width') else 1.0
+            offx = irect['x'] - crect['x']
+            offy = irect['y'] - crect['y']
+            idw, idh = irect['width'], irect['height']
+            self.log(f"[이미지맵] natural={nw}x{nh} imgDisp={int(idw)}x{int(idh)} ratio={ratio:.2f}")
+            def to_shot(X, Y):
+                cssx = offx + X * (idw / nw)
+                cssy = offy + Y * (idh / nh)
+                return int(cssx * ratio), int(cssy * ratio)
             try:
                 areas = mp.find_elements(By.TAG_NAME, "area")
             except:
@@ -552,9 +584,10 @@ class MacroThread(QThread):
                 else:
                     xs = nums[0::2]; ys = nums[1::2]
                     x0n, x1n, y0n, y1n = min(xs), max(xs), min(ys), max(ys)
-                # 자연좌표 bbox → 스크린샷 좌표로 스케일
-                x0 = min(max(int(x0n * sx), 0), sw - 1); x1 = min(max(int(x1n * sx), 0), sw - 1)
-                y0 = min(max(int(y0n * sy), 0), sh - 1); y1 = min(max(int(y1n * sy), 0), sh - 1)
+                sx0, sy0 = to_shot(x0n, y0n)
+                sx1, sy1 = to_shot(x1n, y1n)
+                x0 = min(max(min(sx0, sx1), 0), sw - 1); x1 = min(max(max(sx0, sx1), 0), sw - 1)
+                y0 = min(max(min(sy0, sy1), 0), sh - 1); y1 = min(max(max(sy0, sy1), 0), sh - 1)
                 if x1 <= x0 or y1 <= y0:
                     out.append({"label": label, "color": None}); continue
                 color = self._dominant_color(arr[y0:y1 + 1, x0:x1 + 1])
