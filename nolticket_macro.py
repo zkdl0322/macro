@@ -105,10 +105,10 @@ class MacroThread(QThread):
         except: return ""
 
     # ── 로그인 완료 감지 ──────────────────────
-    # nol.yanolja.com 만 로그인 완료로 인식
+    # 로그인 후 accounts.yanolja.com/myaccount 또는 nol.yanolja.com 으로 이동
     def _is_logged_in(self):
         url = self._url()
-        return "nol.yanolja.com" in url
+        return "nol.yanolja.com" in url or "myaccount" in url
 
     # ── 캡챠 입력창 요소 찾기 (iframe 포함) ──
     # 캡챠 전용 placeholder만 엄격하게 매칭 (다른 입력창 오인 방지)
@@ -869,6 +869,7 @@ class MacroThread(QThread):
             # 로그인 후 myaccount 등으로 가있으면 NOL 메인으로 이동
             try:
                 if "nol.yanolja.com" not in self._url():
+                    self.log("→ NOL 메인(nol.yanolja.com)으로 이동")
                     self.driver.get("https://nol.yanolja.com/")
                     self._wait(2)
             except: pass
