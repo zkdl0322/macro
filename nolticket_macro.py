@@ -447,49 +447,38 @@ class MacroThread(QThread):
         if zones:
             return self._dedup_zones(zones)
 
-        # 2) motickets SVG: "S-1\n001" 같이 한 블록에 등급prefix-번호 + 3자리번호가 있음.
-        #    3자리 숫자 노드를 먼저 찾고, 그 직계 부모(최대 3단계)에서만 prefix 탐색.
-        #    큰 컨테이너를 기준으로 하면 다른 구역의 prefix가 섞이므로 금지.
+        # 2) motickets SVG: "S-1" 라벨 노드를 먼저 찾고,
+        #    그 부모를 최대 5단계 올라가며 같이 있는 \d{3} 숫자를 짝지음.
         js = r"""
-        function findPrefix(numNode){
-            // numNode 의 부모를 최대 3단계까지만 탐색
-            var node = numNode.parentElement;
-            for(var d=0; d<3 && node; d++){
-                // 이 부모의 직접 자식 텍스트 노드만 확인 (querySelectorAll 하면 너무 넓음)
-                var children = node.childNodes;
-                for(var c=0; c<children.length; c++){
-                    var cn = children[c];
-                    var tx = (cn.textContent||'').trim();
-                    var pm = tx.match(/^([A-Z])-\d+$/);
-                    if(pm) return pm[1];
-                }
-                // 직접 자식 element 의 textContent 도 확인
-                var els = node.children;
-                for(var c=0; c<els.length; c++){
-                    var tx = (els[c].textContent||'').trim();
-                    var pm = tx.match(/^([A-Z])-\d+$/);
-                    if(pm) return pm[1];
-                }
-                node = node.parentElement;
-            }
-            return null;
-        }
         var out=[], seen={};
-        var nodes=document.querySelectorAll('text,tspan,span,div,li,td,p');
-        for(var i=0;i<nodes.length;i++){
-            var t=(nodes[i].textContent||'').trim();
-            if(/^\d{3}$/.test(t)){
-                if(seen[t]) continue;
-                seen[t]=1;
-                out.push({label:t, grade_prefix:findPrefix(nodes[i])});
+        var all = document.querySelectorAll('text,tspan,span,div,p,a,g,li,td');
+        for(var i=0;i<all.length;i++){
+            var t=(all[i].textContent||'').trim();
+            var pm=t.match(/^([A-Z])-\d+$/);   // "S-1", "A-3" 등
+            if(!pm) continue;
+            var prefix=pm[1];
+            // 부모를 최대 5단계 올라가며 \d{3} 숫자 찾기
+            var par=all[i].parentElement;
+            var found=false;
+            for(var d=0;d<5&&par&&!found;d++){
+                var kids=par.querySelectorAll('text,tspan,span,div,p');
+                for(var k=0;k<kids.length;k++){
+                    var kt=(kids[k].textContent||'').trim();
+                    if(/^\d{3}$/.test(kt)&&!seen[kt]){
+                        seen[kt]=1;
+                        out.push({label:kt, grade_prefix:prefix});
+                        found=true; break;
+                    }
+                }
+                par=par.parentElement;
             }
         }
-        // 폴백: 3자리 없으면 1~3자리 숫자로
+        // 폴백: prefix 매칭 실패시 숫자만
         if(out.length===0){
-            var nodes2=document.querySelectorAll('text,tspan,span,div,li,td');
-            for(var i=0;i<nodes2.length;i++){
-                var t=(nodes2[i].textContent||'').trim();
-                if(/^\d{1,3}$/.test(t) && !seen[t]){
+            var nodes=document.querySelectorAll('text,tspan,span,div,li,td');
+            for(var i=0;i<nodes.length;i++){
+                var t=(nodes[i].textContent||'').trim();
+                if(/^\d{1,3}$/.test(t)&&!seen[t]){
                     seen[t]=1;
                     out.push({label:t, grade_prefix:null});
                 }
