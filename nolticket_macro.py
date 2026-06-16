@@ -923,6 +923,9 @@ class MacroThread(QThread):
                 self._handle_captcha()
                 self._wait(1)
 
+            # 잔여좌석보기/좌석가격보기 탭 미리 숨김
+            self._hide_view_tabs()
+
             # ④ 좌석 등급 선택 (페이지에서 동적으로 읽음)
             grade, grade_list = self._ask_grade()
             self._wait(0.3)
