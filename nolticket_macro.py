@@ -328,17 +328,67 @@ class MacroThread(QThread):
             return []
 
     # ── 등급 목록 읽기 ────────────────────────
-    # 1) 가격 패널을 열지 않고 DOM 스캔 → 보이지 않게 처리 (문제 1/3)
-    # 2) 못 읽으면 폴백으로 패널을 잠깐 열었다 닫고 읽음
+    # 가격 패널을 opacity:0 으로 유저에게 안 보이게 열고 색상 읽은 뒤 닫음
     def _get_grades(self):
+        drv = self.driver
+        # 가격 패널을 투명하게 열기 (유저에게 안 보임)
+        js_hide = r"""
+        var btns = document.querySelectorAll('a,button,span,div,li,p');
+        var panel = null;
+        for(var i=0;i<btns.length;i++){
+            var t=(btns[i].textContent||'').replace(/\s+/g,'').trim();
+            if(t==='좌석가격보기'||t==='가격보기'){
+                btns[i].click();
+                // 열린 패널을 찾아 투명 처리
+                setTimeout(function(){}, 0);
+                return true;
+            }
+        }
+        return false;
+        """
+        try: drv.execute_script(js_hide)
+        except: pass
+        self._wait(0.5)
+
+        # 패널 컨테이너를 opacity:0 으로 숨김 (렌더링은 유지해야 색 읽힘)
+        js_invis = r"""
+        var sels=['[class*="price"]','[class*="grade"]','[class*="legend"]',
+                  '[class*="seatGrade"]','[class*="ticket"]'];
+        var found=null;
+        for(var s=0;s<sels.length;s++){
+            var els=document.querySelectorAll(sels[s]);
+            for(var i=0;i<els.length;i++){
+                var b=els[i].getBoundingClientRect();
+                if(b.width>100&&b.height>50){
+                    els[i].style.opacity='0';
+                    els[i].style.pointerEvents='none';
+                    if(!found) found=els[i];
+                }
+            }
+        }
+        return found ? true : false;
+        """
+        try: drv.execute_script(js_invis)
+        except: pass
+
         rows = self._scan_grades()
-        if rows:
-            return rows
-        # 폴백: 가격 패널을 열어 읽은 뒤 곧바로 닫음
-        self._open_price_panel()
-        self._wait(0.4)
-        rows = self._scan_grades()
-        self._close_price_panel()
+
+        # 패널 닫기 + opacity 복원
+        self._click_text_button(["가격닫기"])
+        try:
+            drv.execute_script(r"""
+            var sels=['[class*="price"]','[class*="grade"]','[class*="legend"]',
+                      '[class*="seatGrade"]','[class*="ticket"]'];
+            for(var s=0;s<sels.length;s++){
+                var els=document.querySelectorAll(sels[s]);
+                for(var i=0;i<els.length;i++){
+                    els[i].style.opacity='';
+                    els[i].style.pointerEvents='';
+                }
+            }
+            """)
+        except: pass
+        self._wait(0.3)
         return rows
 
     # ── 좌석 등급 선택 ───────────────────────
