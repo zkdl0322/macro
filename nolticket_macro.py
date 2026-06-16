@@ -661,23 +661,76 @@ class MacroThread(QThread):
     # ── 티켓가격선택 클릭 ────────────────────
     def _click_complete(self):
         drv = self.driver
-        self.log("티켓가격선택 클릭")
-        for xp in [
-            "//button[contains(text(),'티켓가격선택')]",
-            "//a[contains(text(),'티켓가격선택')]",
-            "//button[contains(text(),'가격선택')]",
-            "//button[contains(text(),'좌석선택완료')]",
-            "//button[contains(text(),'선택완료')]",
-            "//button[contains(text(),'다음')]",
-        ]:
+        self.log("티켓가격선택 버튼 찾는 중...")
+
+        # 1) XPath로 다양한 태그에서 탐색
+        keywords = ['티켓가격선택', '가격선택', '좌석선택완료', '선택완료']
+        tags = ['button', 'a', 'div', 'span', 'p']
+        clicked = False
+        for kw in keywords:
+            if clicked: break
+            for tag in tags:
+                xp = f"//{tag}[contains(text(),'{kw}')]"
+                try:
+                    els = drv.find_elements(By.XPATH, xp)
+                    for el in els:
+                        if el.is_displayed():
+                            drv.execute_script("arguments[0].click();", el)
+                            self.log(f"→ [{kw}] 클릭 완료")
+                            clicked = True; break
+                except: pass
+                if clicked: break
+
+        # 2) JS 텍스트 검색 (위에서 못 찾은 경우)
+        if not clicked:
+            js = r"""
+            var kws = ['티켓가격선택','가격선택','좌석선택완료','선택완료'];
+            var nodes = document.querySelectorAll('button,a,div,span,li');
+            for(var k=0;k<kws.length;k++){
+                for(var i=0;i<nodes.length;i++){
+                    var t=(nodes[i].textContent||'').trim();
+                    if(t===kws[k] || t.indexOf(kws[k])>=0){
+                        var bnd=nodes[i].getBoundingClientRect();
+                        if(bnd.width>0 && bnd.height>0){
+                            nodes[i].click(); return kws[k];
+                        }
+                    }
+                }
+            }
+            return null;
+            """
             try:
-                btn = drv.find_element(By.XPATH, xp)
-                if btn.is_displayed():
-                    drv.execute_script("arguments[0].click();", btn)
-                    self.log(f"→ 클릭 완료")
-                    break
+                result = drv.execute_script(js)
+                if result:
+                    self.log(f"→ JS로 [{result}] 클릭 완료")
+                    clicked = True
             except: pass
-        self._wait(1.5)
+
+        if not clicked:
+            self.log("→ 티켓가격선택 버튼을 찾지 못했습니다")
+
+        self._wait(2.0)
+
+        # 3) 클릭 후 페이지가 넘어갔는지 확인, 아직 좌석화면이면 재시도
+        url = self._url()
+        if "step2" in url and "티켓가격선택" in self._src():
+            self.log("→ 아직 좌석 화면 - 1초 후 재시도")
+            self._wait(1.0)
+            try:
+                js2 = r"""
+                var nodes=document.querySelectorAll('button,a,div,span');
+                for(var i=0;i<nodes.length;i++){
+                    var t=(nodes[i].textContent||'').trim();
+                    if(t.indexOf('티켓가격선택')>=0||t.indexOf('가격선택')>=0){
+                        var b=nodes[i].getBoundingClientRect();
+                        if(b.width>0&&b.height>0){nodes[i].click();return true;}
+                    }
+                }
+                return false;
+                """
+                drv.execute_script(js2)
+            except: pass
+            self._wait(1.5)
 
     # ── 결제 페이지 감지 ──────────────────────
     # motickets: step3 이상 URL 또는 결제 전용 페이지로 이동했을 때만 감지
