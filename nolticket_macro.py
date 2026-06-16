@@ -328,62 +328,47 @@ class MacroThread(QThread):
             return []
 
     # ── 등급 목록 읽기 ────────────────────────
-    # 가격 패널을 opacity:0 으로 유저에게 안 보이게 열고 색상 읽은 뒤 닫음
+    # 가격 패널을 화면 밖(top:-9999px)으로 보내 완전히 숨긴 채 읽고 닫음
     def _get_grades(self):
         drv = self.driver
-        # 가격 패널을 투명하게 열기 (유저에게 안 보임)
-        js_hide = r"""
-        var btns = document.querySelectorAll('a,button,span,div,li,p');
-        var panel = null;
-        for(var i=0;i<btns.length;i++){
-            var t=(btns[i].textContent||'').replace(/\s+/g,'').trim();
-            if(t==='좌석가격보기'||t==='가격보기'){
-                btns[i].click();
-                // 열린 패널을 찾아 투명 처리
-                setTimeout(function(){}, 0);
-                return true;
-            }
-        }
-        return false;
-        """
-        try: drv.execute_script(js_hide)
-        except: pass
-        self._wait(0.5)
-
-        # 패널 컨테이너를 opacity:0 으로 숨김 (렌더링은 유지해야 색 읽힘)
-        js_invis = r"""
+        # 1) 패널 버튼 클릭
+        self._open_price_panel()
+        # 2) 렌더된 패널을 화면 밖으로 이동 (유저에게 안 보임, 렌더링은 유지)
+        js_offscreen = r"""
+        var moved=[];
         var sels=['[class*="price"]','[class*="grade"]','[class*="legend"]',
-                  '[class*="seatGrade"]','[class*="ticket"]'];
-        var found=null;
+                  '[class*="seatGrade"]','[class*="GradeInfo"]','[class*="gradeInfo"]',
+                  '[class*="PriceInfo"]','[class*="priceInfo"]'];
         for(var s=0;s<sels.length;s++){
             var els=document.querySelectorAll(sels[s]);
             for(var i=0;i<els.length;i++){
                 var b=els[i].getBoundingClientRect();
-                if(b.width>100&&b.height>50){
-                    els[i].style.opacity='0';
-                    els[i].style.pointerEvents='none';
-                    if(!found) found=els[i];
+                if(b.width>80&&b.height>30){
+                    els[i].setAttribute('data-orig-style', els[i].getAttribute('style')||'');
+                    els[i].style.cssText += ';position:fixed!important;top:-9999px!important;left:-9999px!important;';
+                    moved.push(i);
                 }
             }
         }
-        return found ? true : false;
+        return moved.length;
         """
-        try: drv.execute_script(js_invis)
+        try: drv.execute_script(js_offscreen)
         except: pass
 
         rows = self._scan_grades()
 
-        # 패널 닫기 + opacity 복원
+        # 3) 패널 닫기 + 스타일 복원
         self._click_text_button(["가격닫기"])
         try:
             drv.execute_script(r"""
             var sels=['[class*="price"]','[class*="grade"]','[class*="legend"]',
-                      '[class*="seatGrade"]','[class*="ticket"]'];
+                      '[class*="seatGrade"]','[class*="GradeInfo"]','[class*="gradeInfo"]',
+                      '[class*="PriceInfo"]','[class*="priceInfo"]'];
             for(var s=0;s<sels.length;s++){
                 var els=document.querySelectorAll(sels[s]);
                 for(var i=0;i<els.length;i++){
-                    els[i].style.opacity='';
-                    els[i].style.pointerEvents='';
+                    var orig=els[i].getAttribute('data-orig-style');
+                    if(orig!==null){ els[i].setAttribute('style',orig); }
                 }
             }
             """)
@@ -447,33 +432,29 @@ class MacroThread(QThread):
         if zones:
             return self._dedup_zones(zones)
 
-        # 2) motickets SVG: "S-1" 라벨 노드를 먼저 찾고,
-        #    그 부모를 최대 5단계 올라가며 같이 있는 \d{3} 숫자를 짝지음.
+        # 2) motickets SVG: <a>/<g> 태그만 탐색 (div/span 등 큰 컨테이너 제외)
+        #    각 클릭 가능한 구역 블록 안에 "S-1"과 "001"이 함께 있음.
         js = r"""
         var out=[], seen={};
-        var all = document.querySelectorAll('text,tspan,span,div,p,a,g,li,td');
-        for(var i=0;i<all.length;i++){
-            var t=(all[i].textContent||'').trim();
-            var pm=t.match(/^([A-Z])-\d+$/);   // "S-1", "A-3" 등
-            if(!pm) continue;
-            var prefix=pm[1];
-            // 부모를 최대 5단계 올라가며 \d{3} 숫자 찾기
-            var par=all[i].parentElement;
-            var found=false;
-            for(var d=0;d<5&&par&&!found;d++){
-                var kids=par.querySelectorAll('text,tspan,span,div,p');
-                for(var k=0;k<kids.length;k++){
-                    var kt=(kids[k].textContent||'').trim();
-                    if(/^\d{3}$/.test(kt)&&!seen[kt]){
-                        seen[kt]=1;
-                        out.push({label:kt, grade_prefix:prefix});
-                        found=true; break;
-                    }
-                }
-                par=par.parentElement;
+        // SVG 구역 블록은 <a> 또는 <g> 안에 <text> 들이 있음
+        var containers = document.querySelectorAll('a,g');
+        for(var i=0;i<containers.length;i++){
+            var c=containers[i];
+            var textEls=c.querySelectorAll('text,tspan');
+            // 이 컨테이너의 직접 텍스트 노드들만 확인
+            var prefix=null, num=null;
+            for(var j=0;j<textEls.length;j++){
+                var t=(textEls[j].textContent||'').trim();
+                var pm=t.match(/^([A-Z])-\d+$/);
+                if(pm && !prefix) prefix=pm[1];
+                if(/^\d{3}$/.test(t) && !num) num=t;
+            }
+            if(num && !seen[num]){
+                seen[num]=1;
+                out.push({label:num, grade_prefix:prefix||null});
             }
         }
-        // 폴백: prefix 매칭 실패시 숫자만
+        // 폴백: SVG <a>/<g> 에서 못 찾으면 모든 텍스트에서 숫자 수집
         if(out.length===0){
             var nodes=document.querySelectorAll('text,tspan,span,div,li,td');
             for(var i=0;i<nodes.length;i++){
@@ -805,6 +786,9 @@ class MacroThread(QThread):
                     # 구역 클릭 (실패해도 다음 구역으로)
                     if not self._click_zone(zone_num):
                         continue
+
+                    # 구역 클릭 후 가격 패널이 자동으로 뜨면 즉시 닫음 (문제 3)
+                    self._close_price_panel()
 
                     self._wait(self.delay)
                     self._solve_puzzle()
