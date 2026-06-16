@@ -418,20 +418,21 @@ class MacroThread(QThread):
             except: pass
         return False
 
-    # ── 구역 목록 동적 읽기 ─────────────────────
-    # 반환: [{'label': '001', 'grade_prefix': 'S'}, ...]
-    # motickets SVG: "S-1\n001" 같이 등급prefix-번호 + 3자리번호가 한 그룹에 있음.
-    # 등급 prefix(S/A/B…)를 함께 추출해 필터링에 사용.
+    # ── 구역 목록 + 색상 읽기 ───────────────────
+    # 반환: [{'label': '001', 'color': [r,g,b]}, ...]
+    # SVG 구역 도형(path/polygon/rect)의 fill 색상을 함께 추출해
+    # 선택한 등급 색상과 매칭하는 데 사용한다.
     def _get_zones(self):
         drv = self.driver
         zones = []
-        # 1) BookMain.asp (iframe) - area 태그 title/alt
+
+        # 1) BookMain.asp (iframe) - area 태그 title/alt (구형 페이지)
         try:
             drv.switch_to.default_content()
             self._to_frame("ifrmSeat", "mainFrame")
             for a in drv.find_elements(By.TAG_NAME, "area"):
                 t = (a.get_attribute("title") or a.get_attribute("alt") or "").strip()
-                if t: zones.append({'label': t, 'grade_prefix': None})
+                if t: zones.append({'label': t, 'color': None})
             drv.switch_to.default_content()
         except:
             try: drv.switch_to.default_content()
@@ -439,64 +440,80 @@ class MacroThread(QThread):
         if zones:
             return self._dedup_zones(zones)
 
-        # 2) motickets SVG 구역 탐색 - 4가지 방법 순차 시도
+        # 2) motickets SPA - SVG 구역 컨테이너(<a>/<g>)에서 숫자 + fill 색상 추출
         js = r"""
+        function parseColor(s){
+            if(!s||s==='none'||s==='transparent') return null;
+            if(s.charAt(0)==='#'){
+                var h=s.slice(1);
+                if(h.length===3) h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+                if(h.length===6) return [parseInt(h.slice(0,2),16),
+                                         parseInt(h.slice(2,4),16),
+                                         parseInt(h.slice(4,6),16)];
+                return null;
+            }
+            var m=s.match(/(\d+),\s*(\d+),\s*(\d+)/);
+            if(m) return [+m[1],+m[2],+m[3]];
+            return null;
+        }
+        function isValidColor(c){
+            if(!c) return false;
+            if(c[0]>240&&c[1]>240&&c[2]>240) return false; // 흰색 제외
+            if(c[0]<15&&c[1]<15&&c[2]<15) return false;    // 검정 제외
+            return true;
+        }
+        function getElemColor(el){
+            // 1) fill attribute (SVG)
+            var f=el.getAttribute('fill');
+            if(f){ var c=parseColor(f); if(isValidColor(c)) return c; }
+            // 2) computed style fill
+            try{
+                var cs=window.getComputedStyle(el);
+                var c=parseColor(cs.fill||'');
+                if(isValidColor(c)) return c;
+                c=parseColor(cs.backgroundColor||'');
+                if(isValidColor(c)) return c;
+            }catch(e){}
+            return null;
+        }
+        function getContainerColor(el){
+            // 자식 도형(path/polygon/rect/circle/ellipse)에서 색상 추출
+            var shapes=el.querySelectorAll('path,polygon,rect,circle,ellipse');
+            for(var s=0;s<shapes.length;s++){
+                var c=getElemColor(shapes[s]);
+                if(c) return c;
+            }
+            return getElemColor(el);
+        }
+
         var out=[], seen={};
-
-        // 방법1: <text> 안의 <tspan> 들에서 prefix+num 짝짓기
-        var texts = document.querySelectorAll('text');
-        for(var i=0;i<texts.length;i++){
-            var spans = texts[i].querySelectorAll('tspan');
-            var prefix=null, num=null;
-            // tspan 없으면 text 자체 내용도 확인
-            var candidates=[];
-            if(spans.length===0) candidates=[texts[i]];
-            else for(var s=0;s<spans.length;s++) candidates.push(spans[s]);
-            for(var k=0;k<candidates.length;k++){
-                var t=(candidates[k].textContent||'').trim();
-                var pm=t.match(/^([A-Z])-\d+$/);
-                if(pm && !prefix) prefix=pm[1];
-                if(/^\d{3}$/.test(t) && !num) num=t;
+        // <a> 또는 <g> 컨테이너에서 숫자 텍스트 + 색상 추출
+        var containers=document.querySelectorAll('a,g');
+        for(var i=0;i<containers.length;i++){
+            var el=containers[i];
+            // 숫자 구역번호 탐색 (1~3자리)
+            var textEls=el.querySelectorAll('text,tspan');
+            var num=null;
+            for(var t=0;t<textEls.length;t++){
+                var tx=(textEls[t].textContent||'').trim();
+                if(/^\d{1,3}$/.test(tx)){ num=tx; break; }
             }
-            if(num && !seen[num]){ seen[num]=1; out.push({label:num, grade_prefix:prefix||null}); }
+            if(!num) continue;
+            if(seen[num]) continue;
+            var color=getContainerColor(el);
+            seen[num]=1;
+            out.push({label:num, color:color});
         }
 
-        // 방법2: <a> 태그 안의 text 요소들
+        // 폴백: 숫자 text/tspan 만 수집 (색상 null)
         if(out.length===0){
-            var as=document.querySelectorAll('a');
-            for(var i=0;i<as.length;i++){
-                var ts=as[i].querySelectorAll('text,tspan');
-                var prefix=null, num=null;
-                for(var j=0;j<ts.length;j++){
-                    var t=(ts[j].textContent||'').trim();
-                    var pm=t.match(/^([A-Z])-\d+$/);
-                    if(pm && !prefix) prefix=pm[1];
-                    if(/^\d{3}$/.test(t) && !num) num=t;
-                }
-                if(num && !seen[num]){ seen[num]=1; out.push({label:num, grade_prefix:prefix||null}); }
-            }
-        }
-
-        // 방법3: 전체 textContent 에 "X-N" 과 "NNN" 이 함께 있는 <g> 탐색
-        if(out.length===0){
-            var gs=document.querySelectorAll('g');
-            for(var i=0;i<gs.length;i++){
-                var full=(gs[i].textContent||'').trim();
-                var pm=full.match(/([A-Z])-\d+/);
-                var nm=full.match(/\b(\d{3})\b/);
-                if(pm && nm && !seen[nm[1]]){
-                    seen[nm[1]]=1;
-                    out.push({label:nm[1], grade_prefix:pm[1]});
-                }
-            }
-        }
-
-        // 폴백: 숫자만 수집
-        if(out.length===0){
-            var nodes=document.querySelectorAll('text,tspan,span,div,li,td');
+            var nodes=document.querySelectorAll('text,tspan');
             for(var i=0;i<nodes.length;i++){
-                var t=(nodes[i].textContent||'').trim();
-                if(/^\d{1,3}$/.test(t)&&!seen[t]){ seen[t]=1; out.push({label:t, grade_prefix:null}); }
+                var tx=(nodes[i].textContent||'').trim();
+                if(/^\d{1,3}$/.test(tx)&&!seen[tx]){
+                    seen[tx]=1;
+                    out.push({label:tx, color:null});
+                }
             }
         }
         return out;
@@ -538,32 +555,39 @@ class MacroThread(QThread):
                 seen.add(x); out.append(x)
         return out
 
-    # ── 구역 선택 (등급 prefix로 필터링) ──────
+    @staticmethod
+    def _color_dist(c1, c2):
+        if not c1 or not c2: return 9999
+        return abs(c1[0]-c2[0]) + abs(c1[1]-c2[1]) + abs(c1[2]-c2[2])
+
+    # ── 구역 선택 (등급 색상으로 필터링) ─────
     def _ask_zones(self, grade=None):
         all_zones = self._get_zones()
-        # 디버그: 첫 10개 구역의 prefix 로그
-        for z in all_zones[:10]:
-            self.log(f"  [DEBUG] {z.get('label')} prefix={z.get('grade_prefix')}")
-        grade_name = (grade or {}).get('name', '')
+        grade_color = (grade or {}).get('color')  # [r,g,b] 또는 None
+        grade_name  = (grade or {}).get('name', '')
 
-        # 등급명 첫 글자(S/A/B/C/D)를 grade_prefix와 매칭
-        # 예: "S석" → prefix "S", "A석" → "A"
-        prefix = None
-        if grade_name:
-            import re
-            m = re.match(r'([A-Z])', grade_name)
-            if m:
-                prefix = m.group(1)
-
-        if prefix and any(z.get('grade_prefix') for z in all_zones):
-            filtered = [z for z in all_zones if z.get('grade_prefix') == prefix]
+        # 등급 색상과 일치하는 구역만 필터링 (색 거리 <= 60)
+        if grade_color and any(z.get('color') for z in all_zones):
+            COLOR_THRESH = 60
+            filtered = [z for z in all_zones
+                        if self._color_dist(z.get('color'), grade_color) <= COLOR_THRESH]
             if filtered:
+                # 구역 번호 오름차순 정렬
+                try:
+                    filtered.sort(key=lambda z: int(z['label']))
+                except: pass
                 self.log(f"[등급 필터] {grade_name} 구역 {len(filtered)}개")
                 zone_list = filtered
             else:
-                self.log("prefix 필터링 결과 없음 → 전체 구역 표시")
+                self.log("색상 필터링 결과 없음 → 전체 구역 표시")
+                try:
+                    all_zones.sort(key=lambda z: int(z['label']))
+                except: pass
                 zone_list = all_zones
         else:
+            try:
+                all_zones.sort(key=lambda z: int(z['label']))
+            except: pass
             zone_list = all_zones
 
         if not zone_list:
