@@ -386,8 +386,12 @@ class MacroThread(QThread):
     # 반환: [{'label': '101', 'color': [r,g,b] or None}, ...]
     def _get_zones(self):
         drv = self.driver
+        # 1) 색칠된 SVG 지도 우선 (default content + 모든 iframe 탐색)
+        svg = self._svg_zones_all_frames()
+        if svg and any(z.get('color') for z in svg):
+            return self._dedup_zones(svg)
+        # 2) BookMain.asp (iframe) - area 태그 title/alt (색상 없음)
         zones = []
-        # 1) BookMain.asp (iframe) - area 태그 title/alt (색상 없음)
         try:
             drv.switch_to.default_content()
             self._to_frame("ifrmSeat", "mainFrame")
@@ -400,8 +404,51 @@ class MacroThread(QThread):
             except: pass
         if zones:
             return self._dedup_zones(zones)
-        # 2) motickets (SVG) - 구역 번호 텍스트 위치에서 깔린 색칠 도형 색상 추출
-        js = r"""
+        # 3) SVG 결과가 색은 없어도 라벨은 있으면 사용
+        if svg:
+            return self._dedup_zones(svg)
+        return []
+
+    def _svg_zones_all_frames(self):
+        """default content와 모든 iframe에서 SVG 구역+색상을 읽어 색상이 가장 많은 결과 반환"""
+        drv = self.driver
+        best = []
+        best_colored = -1
+        def _try():
+            try:
+                res = drv.execute_script(self._svg_zone_js()) or []
+            except:
+                res = []
+            return res
+        # default content
+        try: drv.switch_to.default_content()
+        except: pass
+        r = _try()
+        c = sum(1 for z in r if z.get('color'))
+        if c > best_colored:
+            best, best_colored = r, c
+        # 각 iframe 탐색
+        try:
+            frames = drv.find_elements(By.TAG_NAME, "iframe")
+        except:
+            frames = []
+        for fr in frames:
+            try:
+                drv.switch_to.default_content()
+                drv.switch_to.frame(fr)
+                r = _try()
+                c = sum(1 for z in r if z.get('color'))
+                if c > best_colored:
+                    best, best_colored = r, c
+            except:
+                pass
+        try: drv.switch_to.default_content()
+        except: pass
+        return best
+
+    def _svg_zone_js(self):
+        # motickets (SVG) - 구역 번호 텍스트 위치에서 깔린 색칠 도형 색상 추출
+        return r"""
         function parseColor(f){
             if(!f) return null;
             var m=f.match(/(\d+),\s*(\d+),\s*(\d+)/);
@@ -451,9 +498,6 @@ class MacroThread(QThread):
         }
         return out;
         """
-        try: zones = drv.execute_script(js) or []
-        except: zones = []
-        return self._dedup_zones(zones)
 
     def _dedup_zones(self, items):
         seen, out = set(), []
