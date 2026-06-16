@@ -432,37 +432,64 @@ class MacroThread(QThread):
         if zones:
             return self._dedup_zones(zones)
 
-        # 2) motickets SVG: <a>/<g> 태그만 탐색 (div/span 등 큰 컨테이너 제외)
-        #    각 클릭 가능한 구역 블록 안에 "S-1"과 "001"이 함께 있음.
+        # 2) motickets SVG 구역 탐색 - 4가지 방법 순차 시도
         js = r"""
         var out=[], seen={};
-        // SVG 구역 블록은 <a> 또는 <g> 안에 <text> 들이 있음
-        var containers = document.querySelectorAll('a,g');
-        for(var i=0;i<containers.length;i++){
-            var c=containers[i];
-            var textEls=c.querySelectorAll('text,tspan');
-            // 이 컨테이너의 직접 텍스트 노드들만 확인
+
+        // 방법1: <text> 안의 <tspan> 들에서 prefix+num 짝짓기
+        var texts = document.querySelectorAll('text');
+        for(var i=0;i<texts.length;i++){
+            var spans = texts[i].querySelectorAll('tspan');
             var prefix=null, num=null;
-            for(var j=0;j<textEls.length;j++){
-                var t=(textEls[j].textContent||'').trim();
+            // tspan 없으면 text 자체 내용도 확인
+            var candidates=[];
+            if(spans.length===0) candidates=[texts[i]];
+            else for(var s=0;s<spans.length;s++) candidates.push(spans[s]);
+            for(var k=0;k<candidates.length;k++){
+                var t=(candidates[k].textContent||'').trim();
                 var pm=t.match(/^([A-Z])-\d+$/);
                 if(pm && !prefix) prefix=pm[1];
                 if(/^\d{3}$/.test(t) && !num) num=t;
             }
-            if(num && !seen[num]){
-                seen[num]=1;
-                out.push({label:num, grade_prefix:prefix||null});
+            if(num && !seen[num]){ seen[num]=1; out.push({label:num, grade_prefix:prefix||null}); }
+        }
+
+        // 방법2: <a> 태그 안의 text 요소들
+        if(out.length===0){
+            var as=document.querySelectorAll('a');
+            for(var i=0;i<as.length;i++){
+                var ts=as[i].querySelectorAll('text,tspan');
+                var prefix=null, num=null;
+                for(var j=0;j<ts.length;j++){
+                    var t=(ts[j].textContent||'').trim();
+                    var pm=t.match(/^([A-Z])-\d+$/);
+                    if(pm && !prefix) prefix=pm[1];
+                    if(/^\d{3}$/.test(t) && !num) num=t;
+                }
+                if(num && !seen[num]){ seen[num]=1; out.push({label:num, grade_prefix:prefix||null}); }
             }
         }
-        // 폴백: SVG <a>/<g> 에서 못 찾으면 모든 텍스트에서 숫자 수집
+
+        // 방법3: 전체 textContent 에 "X-N" 과 "NNN" 이 함께 있는 <g> 탐색
+        if(out.length===0){
+            var gs=document.querySelectorAll('g');
+            for(var i=0;i<gs.length;i++){
+                var full=(gs[i].textContent||'').trim();
+                var pm=full.match(/([A-Z])-\d+/);
+                var nm=full.match(/\b(\d{3})\b/);
+                if(pm && nm && !seen[nm[1]]){
+                    seen[nm[1]]=1;
+                    out.push({label:nm[1], grade_prefix:pm[1]});
+                }
+            }
+        }
+
+        // 폴백: 숫자만 수집
         if(out.length===0){
             var nodes=document.querySelectorAll('text,tspan,span,div,li,td');
             for(var i=0;i<nodes.length;i++){
                 var t=(nodes[i].textContent||'').trim();
-                if(/^\d{1,3}$/.test(t)&&!seen[t]){
-                    seen[t]=1;
-                    out.push({label:t, grade_prefix:null});
-                }
+                if(/^\d{1,3}$/.test(t)&&!seen[t]){ seen[t]=1; out.push({label:t, grade_prefix:null}); }
             }
         }
         return out;
