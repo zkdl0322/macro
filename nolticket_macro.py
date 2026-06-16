@@ -687,14 +687,19 @@ class MacroThread(QThread):
         }
         var seats = document.querySelectorAll(
             'rect[fill], circle[fill], path[fill], rect[class], circle[class],' +
-            'td, td[bgcolor], td[style], div[style*="background"],rect,circle');
+            'td, td[bgcolor], td[style], div[style*="background"], rect, circle, span[style]');
         var cands = [];
         for(var i=0;i<seats.length;i++){
             var el=seats[i];
             if(el.getAttribute && el.getAttribute('aria-disabled')==='true') continue;
             if(isSoldByClass(el)) continue;
             var bnd=el.getBoundingClientRect?el.getBoundingClientRect():null;
-            if(!bnd||bnd.width<3||bnd.height<3) continue;
+            if(!bnd||bnd.width<4||bnd.height<4) continue;
+            // 행 레이블처럼 가로로 긴 요소 제외 (좌석은 거의 정사각형에 가까움)
+            if(bnd.width>80) continue;
+            // 텍스트가 긴 요소 제외 (좌석 번호는 짧거나 없음)
+            var txt=(el.textContent||'').trim();
+            if(txt.length>4) continue;
             if(!matchColor(getRGB(el))) continue;
             cands.push(el);
         }
@@ -747,14 +752,17 @@ class MacroThread(QThread):
         }
         var seats=document.querySelectorAll(
             'rect[fill],circle[fill],path[fill],rect[class],circle[class],' +
-            'td,td[bgcolor],td[style],div[style*="background"],rect,circle');
+            'td,td[bgcolor],td[style],div[style*="background"],rect,circle,span[style]');
         var cands=[];
         for(var i=0;i<seats.length;i++){
             var el=seats[i];
             if(el.getAttribute&&el.getAttribute('aria-disabled')==='true') continue;
             if(isSoldByClass(el)) continue;
             var bnd=el.getBoundingClientRect?el.getBoundingClientRect():null;
-            if(!bnd||bnd.width<3||bnd.height<3) continue;
+            if(!bnd||bnd.width<4||bnd.height<4) continue;
+            if(bnd.width>80) continue;
+            var txt=(el.textContent||'').trim();
+            if(txt.length>4) continue;
             if(!matchColor(getRGB(el))) continue;
             cands.push(el);
         }
@@ -1138,12 +1146,11 @@ class MacroThread(QThread):
                 self._handle_captcha()
                 self._wait(1)
 
-            # ④ 좌석 등급 내부 읽기 (사용자에게 묻지 않음)
-            grade_list = self._get_grades()
-            grade = None  # 등급 필터 없이 전체 좌석 대상
+            # ④ 좌석 등급 선택 (페이지에서 동적으로 읽어 사용자에게 표시)
+            grade, grade_list = self._ask_grade()
             self._wait(0.3)
 
-            # ⑤ 구역 선택
+            # ⑤ 구역 선택 (선택한 등급 색상과 일치하는 구역만 표시)
             zones = self._ask_zones(grade)
             self.log(f"선택 구역: {', '.join(zones) if zones else '전체'}")
             self._wait(0.3)
