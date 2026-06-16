@@ -242,21 +242,20 @@ class MacroThread(QThread):
     # 좌석가격보기·잔여좌석보기 패널은 매크로가 읽은 뒤 숨김.
     def _close_price_panel(self):
         drv = self.driver
-        # 1) '좌석배치도' 탭으로 전환
+        # 1) '좌석닫기' 버튼 클릭 → 가격표 닫고 좌석배치도로 복귀
         for xp in [
-            "//*[contains(text(),'좌석배치도')]",
-            "//*[contains(text(),'배치도')]",
+            "//*[contains(text(),'좌석닫기')]",
+            "//*[contains(text(),'닫기')]",
         ]:
             try:
                 el = drv.find_element(By.XPATH, xp)
                 if el.is_displayed():
                     drv.execute_script("arguments[0].click();", el)
                     self._wait(0.4)
-                    break
+                    return True
             except: pass
-        # 2) 가격보기/잔여좌석보기 토글·닫기 버튼 클릭
+        # 2) '잔여좌석보기' 탭으로 전환 (좌석배치도)
         for sel in [
-            "//*[contains(text(),'가격보기')]",
             "//*[contains(text(),'잔여좌석보기')]",
             "//button[contains(@class,'close')]",
             "//*[contains(@class,'price') and contains(@class,'close')]",
@@ -266,6 +265,7 @@ class MacroThread(QThread):
                 if el.is_displayed():
                     drv.execute_script("arguments[0].click();", el)
                     self._wait(0.3)
+                    return True
             except: pass
         # 3) JS로 가격·잔여좌석 패널 요소 직접 숨김 (좌석배치도는 유지)
         js = r"""
