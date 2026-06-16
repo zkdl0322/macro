@@ -325,6 +325,7 @@ class MacroThread(QThread):
     # ── 좌석 등급 선택 ───────────────────────
     def _ask_grade(self):
         grades = self._get_grades()
+        self._close_price_panel()  # 읽은 뒤 즉시 닫기
         if not grades:
             self.log("등급 정보를 읽지 못했습니다 → 모두로 진행")
             return None, []
