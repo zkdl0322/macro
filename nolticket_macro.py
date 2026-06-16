@@ -401,6 +401,16 @@ class MacroThread(QThread):
             self._to_frame("ifrmSeat", "mainFrame")
             areas = drv.find_elements(By.TAG_NAME, "area")
             self.log(f"[이미지맵] ifrmSeat 프레임 area {len(areas)}개")
+            for a in areas[:2]:
+                try:
+                    self.log("[구조] area: " + (a.get_attribute("outerHTML") or "")[:160])
+                except: pass
+            try:
+                imgs = drv.find_elements(By.TAG_NAME, "img")
+                self.log(f"[구조] img {len(imgs)}개")
+                for im_ in imgs[:3]:
+                    self.log("[구조] img: " + (im_.get_attribute("outerHTML") or "")[:160])
+            except: pass
             if areas:
                 sampled = self._imagemap_zones_screenshot()
                 if sampled and any(z.get('color') for z in sampled):
