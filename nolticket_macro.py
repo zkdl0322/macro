@@ -298,11 +298,13 @@ class MacroThread(QThread):
         for (var i=0;i<all.length;i++){
             var el = all[i];
             var txt = (el.textContent||'').replace(/\s+/g,' ').trim();
-            if (txt.length>40) continue;
-            if (!/석|존/.test(txt)) continue;        // 등급명에 '석' 또는 '존'
-            if (!/원/.test(txt)) continue;           // 가격 포함 행
+            if (txt.length>50) continue;
+            if (!/원/.test(txt)) continue;           // 가격 포함 행만
+            // 등급명 추출: "스탠딩R 165,000원" → "스탠딩R"
             var name = txt.replace(/[\d,]+\s*원.*/,'').replace(/\s+/g,' ').trim();
-            if (!name || name.length<2 || seen[name]) continue;
+            if (!name || name.length<2 || name.length>15 || seen[name]) continue;
+            // 한글/영문 등급명만 허용 (숫자만으로 된 이름 제외)
+            if (/^\d+$/.test(name)) continue;
             // 색상 swatch (배경색) 찾기
             var color = null;
             var scan = [el].concat([].slice.call(el.querySelectorAll('*')));
@@ -328,12 +330,39 @@ class MacroThread(QThread):
             return []
 
     # ── 등급 목록 읽기 ────────────────────────
-    # 가격 패널을 화면 밖(top:-9999px)으로 보내 완전히 숨긴 채 읽고 닫음
+    # CSS <style> 태그로 패널을 완전히 숨긴 채 읽고, 읽은 후 스타일 제거
     def _get_grades(self):
         drv = self.driver
-        # 1) 패널 버튼 클릭
+        # 1) 숨김 스타일 주입 (패널이 열려도 안 보임)
+        js_inject = r"""
+        var st=document.createElement('style');
+        st.id='__macro_hide_price__';
+        st.textContent='[class*="price"],[class*="grade"],[class*="legend"],' +
+            '[class*="seatGrade"],[class*="GradeInfo"],[class*="gradeInfo"],' +
+            '[class*="PriceInfo"],[class*="priceInfo"],[class*="SeatPrice"],' +
+            '[class*="seatPrice"]{visibility:hidden!important;}';
+        document.head.appendChild(st);
+        """
+        try: drv.execute_script(js_inject)
+        except: pass
+        # 2) 패널 열기
         self._open_price_panel()
-        # 2) 렌더된 패널을 화면 밖으로 이동 (유저에게 안 보임, 렌더링은 유지)
+        # 3) 등급 읽기
+        rows = self._scan_grades()
+        # 4) 패널 닫기 + 스타일 제거
+        self._click_text_button(["가격닫기"])
+        try:
+            drv.execute_script(r"""
+            var st=document.getElementById('__macro_hide_price__');
+            if(st) st.parentNode.removeChild(st);
+            """)
+        except: pass
+        self._wait(0.3)
+        return rows
+
+    def _get_grades_UNUSED(self):
+        drv = self.driver
+        # (old offscreen approach - kept for reference)
         js_offscreen = r"""
         var moved=[];
         var sels=['[class*="price"]','[class*="grade"]','[class*="legend"]',
@@ -352,29 +381,7 @@ class MacroThread(QThread):
         }
         return moved.length;
         """
-        try: drv.execute_script(js_offscreen)
-        except: pass
-
-        rows = self._scan_grades()
-
-        # 3) 패널 닫기 + 스타일 복원
-        self._click_text_button(["가격닫기"])
-        try:
-            drv.execute_script(r"""
-            var sels=['[class*="price"]','[class*="grade"]','[class*="legend"]',
-                      '[class*="seatGrade"]','[class*="GradeInfo"]','[class*="gradeInfo"]',
-                      '[class*="PriceInfo"]','[class*="priceInfo"]'];
-            for(var s=0;s<sels.length;s++){
-                var els=document.querySelectorAll(sels[s]);
-                for(var i=0;i<els.length;i++){
-                    var orig=els[i].getAttribute('data-orig-style');
-                    if(orig!==null){ els[i].setAttribute('style',orig); }
-                }
-            }
-            """)
-        except: pass
-        self._wait(0.3)
-        return rows
+        return []
 
     # ── 좌석 등급 선택 ───────────────────────
     def _ask_grade(self):
