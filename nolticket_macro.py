@@ -290,9 +290,8 @@ class MacroThread(QThread):
         return False
 
     # ── 등급 목록 + 색상 동적 읽기 ────────────
-    def _get_grades(self):
-        drv = self.driver
-        self._open_price_panel()
+    # 가격 패널을 열지 않고 현재 DOM에서 등급 행을 스캔한다.
+    def _scan_grades(self):
         js = r"""
         var out = [], seen = {};
         var all = document.querySelectorAll('li,tr,div,p,span,dt,dd,td');
@@ -324,15 +323,27 @@ class MacroThread(QThread):
         return out;
         """
         try:
-            rows = drv.execute_script(js) or []
+            return self.driver.execute_script(js) or []
         except:
-            rows = []
+            return []
+
+    # ── 등급 목록 읽기 ────────────────────────
+    # 1) 가격 패널을 열지 않고 DOM 스캔 → 보이지 않게 처리 (문제 1/3)
+    # 2) 못 읽으면 폴백으로 패널을 잠깐 열었다 닫고 읽음
+    def _get_grades(self):
+        rows = self._scan_grades()
+        if rows:
+            return rows
+        # 폴백: 가격 패널을 열어 읽은 뒤 곧바로 닫음
+        self._open_price_panel()
+        self._wait(0.4)
+        rows = self._scan_grades()
+        self._close_price_panel()
         return rows
 
     # ── 좌석 등급 선택 ───────────────────────
     def _ask_grade(self):
         grades = self._get_grades()
-        self._close_price_panel()   # 등급 읽은 뒤 가격표 닫기 (문제 1)
         if not grades:
             self.log("등급 정보를 읽지 못했습니다 → 모두로 진행")
             return None, []
@@ -383,9 +394,9 @@ class MacroThread(QThread):
             except: pass
         if zones:
             return self._dedup_zones(zones)
-        # 2) motickets (SVG/HTML) - 색칠된 구역 도형 + 같은 그룹의 라벨
-        #    구역 색상은 도형(rect/polygon/path)에 칠해져 있고
-        #    라벨(001 등)은 같은 그룹 안의 text 이므로 도형→라벨 순으로 짝지음.
+        # 2) motickets (SVG/HTML)
+        #    라벨(001,101 등) 텍스트를 먼저 찾고, 그 부모/형제 도형의
+        #    fill/배경색을 읽어 등급 색상과 짝지음.
         js = r"""
         function toRGB(s){
             if(!s) return null;
@@ -398,50 +409,73 @@ class MacroThread(QThread):
                                      parseInt(h.slice(4,6),16)];
             return null;
         }
-        function shapeColor(el){
+        function colorOf(el){
+            if(!el) return null;
             var cs=window.getComputedStyle(el);
-            var cands=[el.getAttribute('fill'), cs.fill,
+            var cands=[el.getAttribute&&el.getAttribute('fill'), cs.fill,
                        cs.backgroundColor, (el.style&&el.style.fill)];
             for(var k=0;k<cands.length;k++){
                 var rgb=toRGB(cands[k]||'');
                 if(!rgb) continue;
                 var r=rgb[0],g=rgb[1],b=rgb[2];
-                if(r>245&&g>245&&b>245) continue;                    // 흰색
-                if(r<12&&g<12&&b<12) continue;                       // 검정
-                if(Math.max(r,g,b)-Math.min(r,g,b)<20 && Math.min(r,g,b)>110) continue; // 회색
+                if(r>245&&g>245&&b>245) continue;   // 흰색
+                if(r<12&&g<12&&b<12) continue;      // 검정
                 return rgb;
             }
             return null;
         }
-        function labelNear(shape){
-            var g=shape.parentElement;
-            for(var d=0; d<3 && g; d++){
-                var ts=g.querySelectorAll('text,tspan,span,div');
-                for(var i=0;i<ts.length;i++){
-                    var tx=(ts[i].textContent||'').trim();
-                    if(/^[A-Z가-힣]?\d{1,3}$/.test(tx)||/^[A-Z가-힣]$/.test(tx)) return tx;
+        // 라벨 노드 기준으로 자신→형제도형→부모 순서로 색을 찾음
+        function findColor(textEl){
+            var node=textEl;
+            for(var d=0; d<5 && node; d++){
+                var c=colorOf(node);
+                if(c) return c;
+                var par=node.parentElement;
+                if(par){
+                    var shapes=par.querySelectorAll('rect,polygon,path,circle');
+                    for(var i=0;i<shapes.length;i++){
+                        var cc=colorOf(shapes[i]);
+                        if(cc) return cc;
+                    }
                 }
-                g=g.parentElement;
+                node=node.parentElement;
             }
-            return '';
+            return null;
         }
         var out=[], seen={};
-        var shapes=document.querySelectorAll('polygon,rect,path,circle,a,td');
-        for(var i=0;i<shapes.length;i++){
-            var bnd=shapes[i].getBoundingClientRect?shapes[i].getBoundingClientRect():null;
-            if(!bnd||bnd.width<10||bnd.height<10) continue;  // 좌석 등 작은 도형 제외
-            var color=shapeColor(shapes[i]);
-            if(!color) continue;
-            var label=labelNear(shapes[i]);
-            if(!label||seen[label]) continue;
-            seen[label]=1;
-            out.push({label:label, color:color});
+        var nodes=document.querySelectorAll('text,tspan,a,g,span,div,li,td');
+        for(var i=0;i<nodes.length;i++){
+            var t=(nodes[i].textContent||'').trim();
+            if(/^[A-Z가-힣]?\d{1,3}$/.test(t)||/^[A-Z가-힣]$/.test(t)){
+                if(seen[t]) continue;
+                seen[t]=1;
+                out.push({label:t, color:findColor(nodes[i])});
+            }
         }
         return out;
         """
-        try: zones = drv.execute_script(js) or []
-        except: zones = []
+        # default content + 모든 iframe 안에서 시도
+        zones = self._run_zone_js(js)
+        if not zones:
+            try:
+                frames = drv.find_elements(By.TAG_NAME, "iframe")
+            except:
+                frames = []
+            for fr in frames:
+                try:
+                    drv.switch_to.default_content()
+                    drv.switch_to.frame(fr)
+                    zones = self._run_zone_js(js)
+                    if zones: break
+                except:
+                    pass
+            try: drv.switch_to.default_content()
+            except: pass
         return self._dedup_zones(zones)
+
+    def _run_zone_js(self, js):
+        try: return self.driver.execute_script(js) or []
+        except: return []
 
     def _dedup_zones(self, items):
         seen, out = set(), []
