@@ -281,13 +281,35 @@ class MacroThread(QThread):
         try: return bool(self.driver.execute_script(js))
         except: return False
 
-    # ── 잔여좌석 안내 패널 닫기 (좌석 잡은 뒤) ─
-    # 좌석 선택 후 뜨는 '잔여좌석 안내' 패널을 '좌석닫기'로 닫는다.
+    # ── 좌석 선택 후 패널 닫기 ─────────────────
+    # 좌석 클릭 후 나타나는 '좌석닫기' 버튼으로 잔여좌석 패널을 닫는다.
     def _close_seat_panel(self):
         if self._click_text_button(["좌석닫기"]):
             self._wait(0.4)
             return True
         return False
+
+    # ── 구역 배치도 패널 닫기 (← 뒤로가기) ────
+    # 좌석이 없는 구역에서 지도로 복귀할 때 좌상단 ← 버튼을 누른다.
+    def _close_zone_panel(self):
+        js = r"""
+        // 화면 상단 좌측(top<130, left<130)의 클릭 가능한 버튼 탐색
+        var nodes = document.querySelectorAll('button,a,[role="button"],[onclick]');
+        for(var i=0;i<nodes.length;i++){
+            var el=nodes[i];
+            var bnd=el.getBoundingClientRect();
+            if(bnd.width>8&&bnd.height>8&&bnd.top<130&&bnd.left<130){
+                el.click(); return true;
+            }
+        }
+        return false;
+        """
+        try:
+            ok = bool(self.driver.execute_script(js))
+            if ok: self._wait(0.5)
+            return ok
+        except:
+            return False
 
     # ── 등급 목록 + 색상 동적 읽기 ────────────
     # 가격 패널을 열지 않고 현재 DOM에서 등급 행을 스캔한다.
@@ -825,13 +847,18 @@ class MacroThread(QThread):
             return False
 
     # ── 구역 순회 ─────────────────────────────
+    # 흐름: 구역 클릭 → 좌석 배치도 로딩 → 가능 좌석 클릭
+    #       성공: 좌석닫기 → 티켓가격선택 → 종료
+    #       실패: ← 버튼으로 지도 복귀 → 다음 구역
     def _rotate_zones(self, zones, grade=None):
+        self.log(f"구역 순회 시작 (딜레이 {self.delay}초)")
         cycle = 0
         consecutive_err = 0
-        self.log(f"구역 순회를 시작합니다 (딜레이 {self.delay}초)")
+
         while True:
             for zone in zones:
                 self._wait(0)
+
                 # 브라우저 세션 생존 확인
                 try:
                     _ = self.driver.current_url
@@ -839,24 +866,27 @@ class MacroThread(QThread):
                     self.log("브라우저가 종료되어 순회를 중단합니다."); return
 
                 try:
-                    # 구역번호 정규화: "가(001)"→"001", "206영역"→"206", "105구역"→"105"
+                    # 구역번호 정규화: "가(001)"→"001", "206영역"→"206"
                     zone_num = zone.replace("구역", "").replace("영역", "").strip()
                     if "(" in zone_num:
                         zone_num = zone_num.split("(")[-1].replace(")", "").strip()
 
-                    # 구역 클릭 (실패해도 다음 구역으로)
+                    # ① 구역 클릭 (실패 시 다음 구역으로)
                     if not self._click_zone(zone_num):
                         continue
 
-                    # 구역 클릭 후 가격 패널이 자동으로 뜨면 즉시 닫음 (문제 3)
-                    self._close_price_panel()
-
+                    # ② 좌석 배치도 로딩 대기 + 퍼즐 처리
                     self._wait(self.delay)
                     self._solve_puzzle()
 
-                    # 예매 가능 좌석 클릭 → 성공하면 순회 종료
+                    # ③ 예매 가능 좌석 클릭
                     if self._click_seat(grade):
+                        # ④ 좌석 선택 성공 → 티켓가격선택 클릭 후 종료
+                        self._click_complete()
                         return
+
+                    # ⑤ 빈 좌석 없음 → ← 버튼으로 지도 복귀
+                    self._close_zone_panel()
                     consecutive_err = 0
 
                 except InterruptedError:
@@ -866,10 +896,12 @@ class MacroThread(QThread):
                     self.log(f"구역 오류(건너뜀): {str(e)[:60]}")
                     if consecutive_err >= 15:
                         self.log("오류가 계속되어 순회를 중단합니다."); return
+                    self._close_zone_panel()
                     self._wait(0.5)
+
             cycle += 1
             if cycle % 5 == 0:
-                self.log(f"구역 순회 {cycle}바퀴 완료...")
+                self.log(f"순회 {cycle}바퀴 완료...")
 
     # ── 티켓가격선택 클릭 ────────────────────
     def _click_complete(self):
@@ -1050,13 +1082,10 @@ class MacroThread(QThread):
             self.log(f"선택 구역: {', '.join(zones) if zones else '전체'}")
             self._wait(0.3)
 
-            # ⑥ 구역 순회 + 좌석 클릭
+            # ⑥ 구역 순회 + 좌석 클릭 + 티켓가격선택 (_rotate_zones 내부에서 처리)
             self._rotate_zones(zones, grade)
 
-            # ⑦ 좌석선택완료
-            self._click_complete()
-
-            # ⑦-② 결제 페이지 진입 대기 (가격/할인선택 단계)
+            # ⑦ 결제 페이지 진입 대기 (가격/할인선택 단계)
             self.log("결제 페이지 진입 대기 중...")
             for _ in range(60):
                 self._wait(1)
