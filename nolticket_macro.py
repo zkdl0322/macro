@@ -960,18 +960,9 @@ class MacroThread(QThread):
         except:
             return False
 
-    # ── 지도로 복귀 ──────────────────────────────
-    def _back_to_map(self):
-        # 좌석닫기가 열려있으면 먼저 닫기
-        self._click_text_button(["좌석닫기"])
-        self._wait(0.3)
-        # ← 버튼 클릭
-        self._close_zone_panel()
-        self._wait(0.5)
-
     # ── 구역 순회 ─────────────────────────────
-    # 흐름: (지도에서) 구역 클릭 → 잔여좌석보기 클릭 → 등급 섹션 펼치기
-    #       → 좌석 클릭 → 성공: 티켓가격선택 / 실패: ← 복귀 → 다음 구역
+    # 흐름: 구역 클릭 → 잔여좌석보기 → 등급 섹션 펼치기 → 좌석 클릭
+    #       성공: 티켓가격선택 / 실패: 좌석닫기 후 다음 구역 클릭
     def _rotate_zones(self, zones, grade=None):
         self.log(f"구역 순회 시작 (딜레이 {self.delay}초)")
         cycle = 0
@@ -991,7 +982,7 @@ class MacroThread(QThread):
                     if "(" in zone_num:
                         zone_num = zone_num.split("(")[-1].replace(")", "").strip()
 
-                    # ① 지도에서 구역 클릭
+                    # ① 구역 클릭 (지도 또는 현재 페이지에서)
                     if not self._click_zone(zone_num):
                         self.log(f"구역 {zone_num} 클릭 실패 → 건너뜀")
                         continue
@@ -1009,8 +1000,9 @@ class MacroThread(QThread):
                         self._click_complete()
                         return
 
-                    # ⑤ 빈 좌석 없음 → 좌석닫기 + ← 으로 지도 복귀
-                    self._back_to_map()
+                    # ⑤ 빈 좌석 없음 → 좌석닫기 후 다음 구역으로
+                    self._click_text_button(["좌석닫기"])
+                    self._wait(0.4)
                     consecutive_err = 0
 
                 except InterruptedError:
@@ -1020,7 +1012,7 @@ class MacroThread(QThread):
                     self.log(f"구역 오류(건너뜀): {str(e)[:60]}")
                     if consecutive_err >= 15:
                         self.log("오류가 계속되어 순회를 중단합니다."); return
-                    try: self._back_to_map()
+                    try: self._click_text_button(["좌석닫기"])
                     except: pass
                     self._wait(0.5)
 
