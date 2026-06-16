@@ -394,16 +394,24 @@ class MacroThread(QThread):
         imap = self._imagemap_zones_all_frames()
         if imap and any(z.get('color') for z in imap):
             return self._dedup_zones(imap)
-        # 2) BookMain.asp (iframe) - area 태그 title/alt (색상 없음)
+        # 2) BookMain.asp - area가 있는 프레임으로 이동 후 그 프레임에서 픽셀 샘플링
         zones = []
         try:
             drv.switch_to.default_content()
             self._to_frame("ifrmSeat", "mainFrame")
-            for a in drv.find_elements(By.TAG_NAME, "area"):
+            areas = drv.find_elements(By.TAG_NAME, "area")
+            self.log(f"[이미지맵] ifrmSeat 프레임 area {len(areas)}개")
+            if areas:
+                sampled = self._imagemap_zones_screenshot()
+                if sampled and any(z.get('color') for z in sampled):
+                    drv.switch_to.default_content()
+                    return self._dedup_zones(sampled)
+            for a in areas:
                 t = (a.get_attribute("title") or a.get_attribute("alt") or "").strip()
                 if t: zones.append({'label': t, 'color': None})
             drv.switch_to.default_content()
-        except:
+        except Exception as e:
+            self.log(f"[이미지맵] 오류: {str(e)[:60]}")
             try: drv.switch_to.default_content()
             except: pass
         if zones:
@@ -483,6 +491,7 @@ class MacroThread(QThread):
             maps = drv.find_elements(By.TAG_NAME, "map")
         except:
             return out
+        self.log(f"[이미지맵] map 태그 {len(maps)}개")
         for mp in maps:
             name = mp.get_attribute("name")
             if not name:
@@ -493,7 +502,15 @@ class MacroThread(QThread):
                     img = drv.find_element(By.CSS_SELECTOR, sel); break
                 except:
                     pass
+            # usemap 매칭 실패 시 프레임 내 가장 큰 img로 대체
             if img is None:
+                try:
+                    imgs = drv.find_elements(By.TAG_NAME, "img")
+                    img = max(imgs, key=lambda e: (e.size.get('width',0)*e.size.get('height',0)), default=None)
+                except:
+                    img = None
+            if img is None:
+                self.log(f"[이미지맵] map '{name}' 연결 img 없음")
                 continue
             try:
                 nw = int(drv.execute_script("return arguments[0].naturalWidth", img) or 0)
@@ -501,6 +518,7 @@ class MacroThread(QThread):
             except:
                 nw = nh = 0
             if not nw or not nh:
+                self.log(f"[이미지맵] naturalSize 0 (nw={nw} nh={nh})")
                 continue
             try:
                 png = img.screenshot_as_png
@@ -511,6 +529,7 @@ class MacroThread(QThread):
                 continue
             sh, sw = arr.shape[0], arr.shape[1]
             sx, sy = sw / nw, sh / nh
+            self.log(f"[이미지맵] natural={nw}x{nh} shot={sw}x{sh}")
             try:
                 areas = mp.find_elements(By.TAG_NAME, "area")
             except:
