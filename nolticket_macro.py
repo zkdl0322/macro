@@ -566,12 +566,14 @@ class MacroThread(QThread):
                 areas = mp.find_elements(By.TAG_NAME, "area")
             except:
                 areas = []
+            dbg = 0
             for a in areas:
                 label = (a.get_attribute("title") or a.get_attribute("alt") or "").strip()
                 if not label:
                     continue
                 shape = (a.get_attribute("shape") or "poly").lower()
-                nums = [float(x) for x in _re.split(r"[,\s]+", (a.get_attribute("coords") or "").strip()) if x]
+                raw = (a.get_attribute("coords") or "").strip()
+                nums = [float(x) for x in _re.split(r"[,\s]+", raw) if x]
                 if len(nums) < 2:
                     continue
                 if shape == "circle":
@@ -588,9 +590,21 @@ class MacroThread(QThread):
                 sx1, sy1 = to_shot(x1n, y1n)
                 x0 = min(max(min(sx0, sx1), 0), sw - 1); x1 = min(max(max(sx0, sx1), 0), sw - 1)
                 y0 = min(max(min(sy0, sy1), 0), sh - 1); y1 = min(max(max(sy0, sy1), 0), sh - 1)
-                if x1 <= x0 or y1 <= y0:
-                    out.append({"label": label, "color": None}); continue
-                color = self._dominant_color(arr[y0:y1 + 1, x0:x1 + 1])
+                color = None
+                if x1 > x0 and y1 > y0:
+                    color = self._dominant_color(arr[y0:y1 + 1, x0:x1 + 1])
+                # bbox에서 색을 못 찾으면 중심점 주변을 넓게 재샘플
+                if color is None:
+                    ccx = int((x0 + x1) / 2); ccy = int((y0 + y1) / 2)
+                    pad = 12
+                    rx0 = max(ccx - pad, 0); rx1 = min(ccx + pad, sw - 1)
+                    ry0 = max(ccy - pad, 0); ry1 = min(ccy + pad, sh - 1)
+                    if rx1 > rx0 and ry1 > ry0:
+                        color = self._dominant_color(arr[ry0:ry1 + 1, rx0:rx1 + 1])
+                if dbg < 4:
+                    self.log(f"[이미지맵] {label} coords~[{int(x0n)},{int(y0n)},{int(x1n)},{int(y1n)}] "
+                             f"bbox=({x0},{y0},{x1},{y1}) color={color}")
+                    dbg += 1
                 out.append({"label": label, "color": color})
         return out
 
