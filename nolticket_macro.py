@@ -566,6 +566,12 @@ class MacroThread(QThread):
                 areas = mp.find_elements(By.TAG_NAME, "area")
             except:
                 areas = []
+            if not areas:  # map 자식에 없으면 프레임 전역에서 검색
+                try:
+                    areas = drv.find_elements(By.TAG_NAME, "area")
+                except:
+                    areas = []
+            self.log(f"[이미지맵] 샘플 대상 area {len(areas)}개")
             dbg = 0
             for a in areas:
                 label = (a.get_attribute("title") or a.get_attribute("alt") or "").strip()
