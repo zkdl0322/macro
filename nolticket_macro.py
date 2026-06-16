@@ -471,6 +471,11 @@ class MacroThread(QThread):
         else:
             zone_list = all_zones
 
+        try:
+            zone_list.sort(key=lambda z: int(''.join(filter(str.isdigit, z['label'])) or '9999'))
+        except:
+            pass
+
         if not zone_list:
             self.log("구역 목록을 읽지 못했습니다. 직접 입력하세요 (예: 105,106)")
         else:
@@ -583,12 +588,10 @@ class MacroThread(QThread):
                 self._wait(1.2)
                 # 하단에 좌석 선택 정보(티켓가격선택/총 N매)가 나타났는지 확인
                 if "티켓가격선택" in self._src() or "총" in self._src():
-                    self._close_price_panel()   # 가격표 숨김
-                    self._hide_view_tabs()      # 잔여좌석보기 탭 숨김
+                    self._hide_view_tabs()
                     return True
                 self._wait(0.8)
                 if "티켓가격선택" in self._src() or "총" in self._src():
-                    self._close_price_panel()
                     self._hide_view_tabs()
                     return True
                 return False
@@ -920,9 +923,6 @@ class MacroThread(QThread):
             if self._captcha_visible():
                 self._handle_captcha()
                 self._wait(1)
-
-            # 잔여좌석보기/좌석가격보기 탭 미리 숨김
-            self._hide_view_tabs()
 
             # ④ 좌석 등급 선택 (페이지에서 동적으로 읽음)
             grade, grade_list = self._ask_grade()
