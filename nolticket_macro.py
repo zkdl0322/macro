@@ -577,39 +577,51 @@ class MacroThread(QThread):
                 label = (a.get_attribute("title") or a.get_attribute("alt") or "").strip()
                 if not label:
                     continue
-                shape = (a.get_attribute("shape") or "poly").lower()
+                # 1순위: coords(자연좌표) → 스크린샷 좌표
+                bbox = None
                 raw = (a.get_attribute("coords") or "").strip()
                 nums = [float(x) for x in _re.split(r"[,\s]+", raw) if x]
-                if len(nums) < 2:
-                    continue
-                if shape == "circle":
-                    cx, cy = nums[0], nums[1]
-                    rr = nums[2] if len(nums) > 2 else 8
-                    x0n, x1n, y0n, y1n = cx - rr, cx + rr, cy - rr, cy + rr
-                elif shape == "rect" and len(nums) >= 4:
-                    x0n, x1n = min(nums[0], nums[2]), max(nums[0], nums[2])
-                    y0n, y1n = min(nums[1], nums[3]), max(nums[1], nums[3])
+                if len(nums) >= 2:
+                    shape = (a.get_attribute("shape") or "poly").lower()
+                    if shape == "circle":
+                        cx, cy = nums[0], nums[1]; rr = nums[2] if len(nums) > 2 else 8
+                        x0n, x1n, y0n, y1n = cx - rr, cx + rr, cy - rr, cy + rr
+                    elif shape == "rect" and len(nums) >= 4:
+                        x0n, x1n = min(nums[0], nums[2]), max(nums[0], nums[2])
+                        y0n, y1n = min(nums[1], nums[3]), max(nums[1], nums[3])
+                    else:
+                        xs = nums[0::2]; ys = nums[1::2]
+                        x0n, x1n, y0n, y1n = min(xs), max(xs), min(ys), max(ys)
+                    sx0, sy0 = to_shot(x0n, y0n); sx1, sy1 = to_shot(x1n, y1n)
+                    bbox = (min(sx0, sx1), min(sy0, sy1), max(sx0, sx1), max(sy0, sy1))
                 else:
-                    xs = nums[0::2]; ys = nums[1::2]
-                    x0n, x1n, y0n, y1n = min(xs), max(xs), min(ys), max(ys)
-                sx0, sy0 = to_shot(x0n, y0n)
-                sx1, sy1 = to_shot(x1n, y1n)
-                x0 = min(max(min(sx0, sx1), 0), sw - 1); x1 = min(max(max(sx0, sx1), 0), sw - 1)
-                y0 = min(max(min(sy0, sy1), 0), sh - 1); y1 = min(max(max(sy0, sy1), 0), sh - 1)
+                    # 2순위: Selenium이 계산한 area.rect (프레임 문서 기준 CSS px)
+                    try:
+                        rc = a.rect
+                    except:
+                        rc = None
+                    if rc and rc.get('width') and rc.get('height'):
+                        ax = (rc['x'] - crect['x']) * ratio
+                        ay = (rc['y'] - crect['y']) * ratio
+                        aw = rc['width'] * ratio; ah = rc['height'] * ratio
+                        bbox = (int(ax), int(ay), int(ax + aw), int(ay + ah))
+                if bbox is None:
+                    if dbg < 4:
+                        self.log(f"[이미지맵] {label} 위치정보 없음 (coords/rect 모두 실패)"); dbg += 1
+                    out.append({"label": label, "color": None}); continue
+                x0 = min(max(bbox[0], 0), sw - 1); x1 = min(max(bbox[2], 0), sw - 1)
+                y0 = min(max(bbox[1], 0), sh - 1); y1 = min(max(bbox[3], 0), sh - 1)
                 color = None
                 if x1 > x0 and y1 > y0:
                     color = self._dominant_color(arr[y0:y1 + 1, x0:x1 + 1])
-                # bbox에서 색을 못 찾으면 중심점 주변을 넓게 재샘플
-                if color is None:
-                    ccx = int((x0 + x1) / 2); ccy = int((y0 + y1) / 2)
-                    pad = 12
+                if color is None:  # 중심 주변 재샘플
+                    ccx = (x0 + x1) // 2; ccy = (y0 + y1) // 2; pad = 12
                     rx0 = max(ccx - pad, 0); rx1 = min(ccx + pad, sw - 1)
                     ry0 = max(ccy - pad, 0); ry1 = min(ccy + pad, sh - 1)
                     if rx1 > rx0 and ry1 > ry0:
                         color = self._dominant_color(arr[ry0:ry1 + 1, rx0:rx1 + 1])
                 if dbg < 4:
-                    self.log(f"[이미지맵] {label} coords~[{int(x0n)},{int(y0n)},{int(x1n)},{int(y1n)}] "
-                             f"bbox=({x0},{y0},{x1},{y1}) color={color}")
+                    self.log(f"[이미지맵] {label} bbox=({x0},{y0},{x1},{y1}) color={color}")
                     dbg += 1
                 out.append({"label": label, "color": color})
         return out
