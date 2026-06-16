@@ -636,14 +636,10 @@ class MacroThread(QThread):
                 selected.append(part)
         return selected if selected else labels
 
-    # ── 좌석 클릭 ─────────────────────────────
-    # grade: {'name','color':[r,g,b]} 또는 None(모두)
-    def _click_seat(self, grade=None):
-        drv = self.driver
-        target = (grade or {}).get("color")  # [r,g,b] 또는 None
-
+    # ── 예매 가능 좌석 목록 수집 ─────────────────
+    def _find_seat_candidates(self, target):
         js = r"""
-        var target = arguments[0];   // [r,g,b] 또는 null
+        var target = arguments[0];
         function parseColor(s){
             if(!s||s==='none'||s==='transparent') return null;
             var m=s.match(/(\d+),\s*(\d+),\s*(\d+)/);
@@ -659,16 +655,12 @@ class MacroThread(QThread):
         function getRGB(el){
             try {
                 var cs = window.getComputedStyle(el);
-                // 1) SVG fill attribute
                 var r = parseColor(el.getAttribute('fill')||'');
                 if(r) return r;
-                // 2) CSS fill (SVG)
                 r = parseColor(cs.fill||'');
                 if(r) return r;
-                // 3) background-color (td/div 등 일반 요소)
                 r = parseColor(cs.backgroundColor||'');
                 if(r) return r;
-                // 4) inline style backgroundColor
                 r = parseColor((el.style&&el.style.backgroundColor)||'');
                 if(r) return r;
             } catch(e){}
@@ -679,10 +671,9 @@ class MacroThread(QThread):
         }
         function matchColor(rgb){
             if(!rgb) return false;
-            if(isGray(rgb.r,rgb.g,rgb.b)) return false;   // 회색=매진 제외
-            if(rgb.r>245&&rgb.g>245&&rgb.b>245) return false; // 흰색 제외
-            if(!target) return true;                       // 모두: 색 있는 좌석
-            // 선택한 등급 색상과의 거리
+            if(isGray(rgb.r,rgb.g,rgb.b)) return false;
+            if(rgb.r>245&&rgb.g>245&&rgb.b>245) return false;
+            if(!target) return true;
             var d=Math.abs(rgb.r-target[0])+Math.abs(rgb.g-target[1])+
                   Math.abs(rgb.b-target[2]);
             return d<=70;
@@ -696,8 +687,7 @@ class MacroThread(QThread):
         }
         var seats = document.querySelectorAll(
             'rect[fill], circle[fill], path[fill], rect[class], circle[class],' +
-            'td, td[bgcolor], td[style], div[style*="background"],' +
-            'rect, circle');
+            'td, td[bgcolor], td[style], div[style*="background"],rect,circle');
         var cands = [];
         for(var i=0;i<seats.length;i++){
             var el=seats[i];
@@ -708,31 +698,105 @@ class MacroThread(QThread):
             if(!matchColor(getRGB(el))) continue;
             cands.push(el);
         }
-        if(cands.length===0) return 0;
-        var picked=cands[0];
-        try { picked.click(); } catch(e){
-            picked.dispatchEvent(new MouseEvent('click',
-                {bubbles:true,cancelable:true,view:window}));
-        }
         return cands.length;
         """
         try:
-            n = drv.execute_script(js, target)
-            if n and n > 0:
-                gname = (grade or {}).get("name", "모두")
-                self.log(f"[{gname}] 예매 가능 좌석 발견 → 클릭 (후보 {n}개)")
-                self._wait(1.2)
-                # 하단에 좌석 선택 정보(티켓가격선택/총 N매)가 나타났는지 확인
-                if "티켓가격선택" in self._src() or "총" in self._src():
-                    self._close_seat_panel()   # 잔여좌석 안내 패널 닫기 (문제 3)
-                    return True
-                self._wait(0.8)
-                if "티켓가격선택" in self._src() or "총" in self._src():
-                    self._close_seat_panel()
-                    return True
-                return False
-        except Exception as e:
-            self.log(f"좌석 클릭 오류: {str(e)[:80]}")
+            return self.driver.execute_script(js, target) or 0
+        except:
+            return 0
+
+    # ── 좌석 클릭 (인덱스 지정) ─────────────────
+    def _click_seat_at(self, target, idx):
+        js = r"""
+        var target = arguments[0];
+        var idx    = arguments[1];
+        function parseColor(s){
+            if(!s||s==='none'||s==='transparent') return null;
+            var m=s.match(/(\d+),\s*(\d+),\s*(\d+)/);
+            if(m) return {r:+m[1],g:+m[2],b:+m[3]};
+            var h=s.replace(/^#/,'');
+            if(h.length===3) h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+            if(h.length===6) return {
+                r:parseInt(h.slice(0,2),16),
+                g:parseInt(h.slice(2,4),16),
+                b:parseInt(h.slice(4,6),16)};
+            return null;
+        }
+        function getRGB(el){
+            try {
+                var cs=window.getComputedStyle(el);
+                var r=parseColor(el.getAttribute('fill')||''); if(r) return r;
+                r=parseColor(cs.fill||''); if(r) return r;
+                r=parseColor(cs.backgroundColor||''); if(r) return r;
+                r=parseColor((el.style&&el.style.backgroundColor)||''); if(r) return r;
+            } catch(e){}
+            return null;
+        }
+        function isGray(r,g,b){ return Math.max(r,g,b)-Math.min(r,g,b)<28&&Math.min(r,g,b)>110; }
+        function matchColor(rgb){
+            if(!rgb) return false;
+            if(isGray(rgb.r,rgb.g,rgb.b)) return false;
+            if(rgb.r>245&&rgb.g>245&&rgb.b>245) return false;
+            if(!target) return true;
+            return Math.abs(rgb.r-target[0])+Math.abs(rgb.g-target[1])+Math.abs(rgb.b-target[2])<=70;
+        }
+        function isSoldByClass(el){
+            var c=(el.className&&el.className.baseVal!==undefined)?el.className.baseVal:(el.className||'');
+            c=(''+c).toLowerCase();
+            return c.indexOf('sold')>=0||c.indexOf('disable')>=0||c.indexOf('reserved')>=0||c.indexOf('unavailab')>=0;
+        }
+        var seats=document.querySelectorAll(
+            'rect[fill],circle[fill],path[fill],rect[class],circle[class],' +
+            'td,td[bgcolor],td[style],div[style*="background"],rect,circle');
+        var cands=[];
+        for(var i=0;i<seats.length;i++){
+            var el=seats[i];
+            if(el.getAttribute&&el.getAttribute('aria-disabled')==='true') continue;
+            if(isSoldByClass(el)) continue;
+            var bnd=el.getBoundingClientRect?el.getBoundingClientRect():null;
+            if(!bnd||bnd.width<3||bnd.height<3) continue;
+            if(!matchColor(getRGB(el))) continue;
+            cands.push(el);
+        }
+        if(idx>=cands.length) return false;
+        var el=cands[idx];
+        try{ el.click(); }catch(e){
+            el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));
+        }
+        return true;
+        """
+        try:
+            return bool(self.driver.execute_script(js, target, idx))
+        except:
+            return False
+
+    # ── 좌석 클릭 ─────────────────────────────
+    # 같은 구역 안에서 예매 가능 좌석을 하나씩 순서대로 시도.
+    # 성공(티켓가격선택 확인) 시 True, 구역 내 모든 좌석 실패 시 False.
+    def _click_seat(self, grade=None):
+        drv = self.driver
+        target = (grade or {}).get("color")
+        gname  = (grade or {}).get("name", "모두")
+
+        total = self._find_seat_candidates(target)
+        if total == 0:
+            return False
+
+        self.log(f"[{gname}] 예매 가능 좌석 {total}개 발견 → 순서대로 시도")
+        for idx in range(total):
+            if not self._click_seat_at(target, idx):
+                break   # 후보 목록이 바뀐 경우
+            self._wait(1.0)
+            src = self._src()
+            if "티켓가격선택" in src or "총" in src:
+                self._close_seat_panel()
+                return True
+            self._wait(0.5)
+            src = self._src()
+            if "티켓가격선택" in src or "총" in src:
+                self._close_seat_panel()
+                return True
+            # 이 좌석은 선택 안 됨 → 다음 좌석 시도
         return False
 
     # ── 퍼즐 슬라이더 ─────────────────────────
