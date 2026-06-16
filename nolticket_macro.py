@@ -221,27 +221,6 @@ class MacroThread(QThread):
 
         return False
 
-    # ── 텍스트 버튼 클릭 헬퍼 ─────────────────
-    # labels 중 화면에 보이는 첫 요소를 클릭. 클릭한 라벨 반환(없으면 None)
-    def _click_text_button(self, labels):
-        drv = self.driver
-        js = r"""
-        var labels = arguments[0];
-        var nodes = document.querySelectorAll('a,button,span,div,li,p');
-        for (var i=0;i<nodes.length;i++){
-            var t=(nodes[i].textContent||'').replace(/\s+/g,'').trim();
-            for (var k=0;k<labels.length;k++){
-                if (t===labels[k]){
-                    var b=nodes[i].getBoundingClientRect();
-                    if (b.width>0 && b.height>0){ nodes[i].click(); return labels[k]; }
-                }
-            }
-        }
-        return null;
-        """
-        try: return drv.execute_script(js, labels)
-        except: return None
-
     # ── 좌석가격(등급) 패널 열기 ─────────────
     def _open_price_panel(self):
         drv = self.driver
@@ -258,17 +237,42 @@ class MacroThread(QThread):
             except: pass
         return False
 
-    # ── 좌석가격(등급) 패널 닫기 ─────────────
-    # 가격표를 읽은 뒤 '가격닫기'를 눌러 좌석배치도로 복귀시킨다.
+    # ── 가격표 / 잔여좌석 패널 닫고 좌석배치도만 표시 ──
+    # 유저에게는 '좌석배치도'만 보여준다.
+    # 좌석가격보기·잔여좌석보기 패널은 매크로가 읽은 뒤 숨김.
     def _close_price_panel(self):
-        # 1) '가격닫기' 버튼 클릭 (가격표 열려있을 때만 존재)
-        if self._click_text_button(["가격닫기"]):
-            self._wait(0.4)
-            return True
-        # 2) JS로 가격 패널 요소 직접 숨김 (폴백)
+        drv = self.driver
+        # 1) '좌석닫기' 버튼 클릭 → 가격표 닫고 좌석배치도로 복귀
+        for xp in [
+            "//*[contains(text(),'좌석닫기')]",
+            "//*[contains(text(),'닫기')]",
+        ]:
+            try:
+                el = drv.find_element(By.XPATH, xp)
+                if el.is_displayed():
+                    drv.execute_script("arguments[0].click();", el)
+                    self._wait(0.4)
+                    return True
+            except: pass
+        # 2) '잔여좌석보기' 탭으로 전환 (좌석배치도)
+        for sel in [
+            "//*[contains(text(),'잔여좌석보기')]",
+            "//button[contains(@class,'close')]",
+            "//*[contains(@class,'price') and contains(@class,'close')]",
+        ]:
+            try:
+                el = drv.find_element(By.XPATH, sel)
+                if el.is_displayed():
+                    drv.execute_script("arguments[0].click();", el)
+                    self._wait(0.3)
+                    return True
+            except: pass
+        # 3) JS로 가격·잔여좌석 패널 요소 직접 숨김 (좌석배치도는 유지)
         js = r"""
         var sels=['.price_view','.seat_price','[class*="priceView"]',
-                  '[class*="seatPrice"]','[class*="price_layer"]','[class*="legend"]'];
+                  '[class*="seatPrice"]','[class*="price_layer"]','[class*="legend"]',
+                  '[class*="remainSeat"]','[class*="remain_seat"]',
+                  '[class*="restSeat"]','[class*="rest_seat"]'];
         var hidden=false;
         for(var s=0;s<sels.length;s++){
             var els=document.querySelectorAll(sels[s]);
@@ -278,55 +282,45 @@ class MacroThread(QThread):
         }
         return hidden;
         """
-        try: return bool(self.driver.execute_script(js))
+        try: return bool(drv.execute_script(js))
         except: return False
 
-    # ── 좌석 선택 후 패널 닫기 ─────────────────
-    # 좌석 클릭 후 나타나는 '좌석닫기' 버튼으로 잔여좌석 패널을 닫는다.
-    def _close_seat_panel(self):
-        if self._click_text_button(["좌석닫기"]):
-            self._wait(0.4)
-            return True
-        return False
-
-    # ── 구역 배치도 패널 닫기 (← 뒤로가기) ────
-    # 좌석이 없는 구역에서 지도로 복귀할 때 좌상단 ← 버튼을 누른다.
-    def _close_zone_panel(self):
+    # ── 잔여좌석보기/좌석가격보기 탭 숨김 (좌석 잡은 뒤) ──
+    def _hide_view_tabs(self):
+        drv = self.driver
         js = r"""
-        // 화면 상단 좌측(top<130, left<130)의 클릭 가능한 버튼 탐색
-        var nodes = document.querySelectorAll('button,a,[role="button"],[onclick]');
-        for(var i=0;i<nodes.length;i++){
-            var el=nodes[i];
-            var bnd=el.getBoundingClientRect();
-            if(bnd.width>8&&bnd.height>8&&bnd.top<130&&bnd.left<130){
-                el.click(); return true;
+        var labels=['잔여좌석보기','좌석가격보기'];
+        var all=document.querySelectorAll('a,button,span,div,li');
+        var hidden=false;
+        for(var i=0;i<all.length;i++){
+            var t=(all[i].textContent||'').replace(/\s+/g,'').trim();
+            for(var k=0;k<labels.length;k++){
+                if(t===labels[k]){
+                    // 탭 버튼 자체만 숨김 (부모로 올라가지 않음)
+                    all[i].style.display='none'; hidden=true;
+                }
             }
         }
-        return false;
+        return hidden;
         """
-        try:
-            ok = bool(self.driver.execute_script(js))
-            if ok: self._wait(0.5)
-            return ok
-        except:
-            return False
+        try: return bool(drv.execute_script(js))
+        except: return False
 
     # ── 등급 목록 + 색상 동적 읽기 ────────────
-    # 가격 패널을 열지 않고 현재 DOM에서 등급 행을 스캔한다.
-    def _scan_grades(self):
+    def _get_grades(self):
+        drv = self.driver
+        self._open_price_panel()
         js = r"""
         var out = [], seen = {};
         var all = document.querySelectorAll('li,tr,div,p,span,dt,dd,td');
         for (var i=0;i<all.length;i++){
             var el = all[i];
             var txt = (el.textContent||'').replace(/\s+/g,' ').trim();
-            if (txt.length>50) continue;
-            if (!/원/.test(txt)) continue;           // 가격 포함 행만
-            // 등급명 추출: "스탠딩R 165,000원" → "스탠딩R"
+            if (txt.length>40) continue;
+            if (!/석|존/.test(txt)) continue;        // 등급명에 '석' 또는 '존'
+            if (!/원/.test(txt)) continue;           // 가격 포함 행
             var name = txt.replace(/[\d,]+\s*원.*/,'').replace(/\s+/g,' ').trim();
-            if (!name || name.length<2 || name.length>15 || seen[name]) continue;
-            // 한글/영문 등급명만 허용 (숫자만으로 된 이름 제외)
-            if (/^\d+$/.test(name)) continue;
+            if (!name || name.length<2 || seen[name]) continue;
             // 색상 swatch (배경색) 찾기
             var color = null;
             var scan = [el].concat([].slice.call(el.querySelectorAll('*')));
@@ -347,67 +341,15 @@ class MacroThread(QThread):
         return out;
         """
         try:
-            return self.driver.execute_script(js) or []
+            rows = drv.execute_script(js) or []
         except:
-            return []
-
-    # ── 등급 목록 읽기 ────────────────────────
-    # CSS <style> 태그로 패널을 완전히 숨긴 채 읽고, 읽은 후 스타일 제거
-    def _get_grades(self):
-        drv = self.driver
-        # 1) 숨김 스타일 주입 (패널이 열려도 안 보임)
-        js_inject = r"""
-        var st=document.createElement('style');
-        st.id='__macro_hide_price__';
-        st.textContent='[class*="price"],[class*="grade"],[class*="legend"],' +
-            '[class*="seatGrade"],[class*="GradeInfo"],[class*="gradeInfo"],' +
-            '[class*="PriceInfo"],[class*="priceInfo"],[class*="SeatPrice"],' +
-            '[class*="seatPrice"]{visibility:hidden!important;}';
-        document.head.appendChild(st);
-        """
-        try: drv.execute_script(js_inject)
-        except: pass
-        # 2) 패널 열기
-        self._open_price_panel()
-        # 3) 등급 읽기
-        rows = self._scan_grades()
-        # 4) 패널 닫기 + 스타일 제거
-        self._click_text_button(["가격닫기"])
-        try:
-            drv.execute_script(r"""
-            var st=document.getElementById('__macro_hide_price__');
-            if(st) st.parentNode.removeChild(st);
-            """)
-        except: pass
-        self._wait(0.3)
+            rows = []
         return rows
-
-    def _get_grades_UNUSED(self):
-        drv = self.driver
-        # (old offscreen approach - kept for reference)
-        js_offscreen = r"""
-        var moved=[];
-        var sels=['[class*="price"]','[class*="grade"]','[class*="legend"]',
-                  '[class*="seatGrade"]','[class*="GradeInfo"]','[class*="gradeInfo"]',
-                  '[class*="PriceInfo"]','[class*="priceInfo"]'];
-        for(var s=0;s<sels.length;s++){
-            var els=document.querySelectorAll(sels[s]);
-            for(var i=0;i<els.length;i++){
-                var b=els[i].getBoundingClientRect();
-                if(b.width>80&&b.height>30){
-                    els[i].setAttribute('data-orig-style', els[i].getAttribute('style')||'');
-                    els[i].style.cssText += ';position:fixed!important;top:-9999px!important;left:-9999px!important;';
-                    moved.push(i);
-                }
-            }
-        }
-        return moved.length;
-        """
-        return []
 
     # ── 좌석 등급 선택 ───────────────────────
     def _ask_grade(self):
         grades = self._get_grades()
+        self._close_price_panel()  # 읽은 뒤 즉시 닫기
         if not grades:
             self.log("등급 정보를 읽지 못했습니다 → 모두로 진행")
             return None, []
@@ -440,15 +382,12 @@ class MacroThread(QThread):
             except: pass
         return False
 
-    # ── 구역 목록 + 색상 읽기 ───────────────────
-    # 반환: [{'label': '001', 'color': [r,g,b]}, ...]
-    # SVG 구역 도형(path/polygon/rect)의 fill 색상을 함께 추출해
-    # 선택한 등급 색상과 매칭하는 데 사용한다.
+    # ── 구역 목록 동적 읽기 (label + color) ─────
+    # 반환: [{'label': '101', 'color': [r,g,b] or None}, ...]
     def _get_zones(self):
         drv = self.driver
         zones = []
-
-        # 1) BookMain.asp (iframe) - area 태그 title/alt (구형 페이지)
+        # 1) BookMain.asp (iframe) - area 태그 title/alt (색상 없음)
         try:
             drv.switch_to.default_content()
             self._to_frame("ifrmSeat", "mainFrame")
@@ -461,125 +400,40 @@ class MacroThread(QThread):
             except: pass
         if zones:
             return self._dedup_zones(zones)
-
-        # 2) motickets SPA - SVG 구역 컨테이너(<a>/<g>)에서 숫자 + fill 색상 추출
+        # 2) motickets (SVG) - 구역 번호 텍스트 + 부모 fill 색상
         js = r"""
-        function parseColor(s){
-            if(!s||s==='none'||s==='transparent') return null;
-            if(s.charAt(0)==='#'){
-                var h=s.slice(1);
-                if(h.length===3) h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
-                if(h.length===6) return [parseInt(h.slice(0,2),16),
-                                         parseInt(h.slice(2,4),16),
-                                         parseInt(h.slice(4,6),16)];
-                return null;
+        function getFill(el){
+            for(var d=0,e=el;d<8&&e;d++,e=e.parentElement){
+                var cs=window.getComputedStyle(e);
+                var f=cs.fill||e.getAttribute('fill')||'';
+                if(!f&&e.style) f=e.style.fill||e.style.backgroundColor||'';
+                if(!f) f=cs.backgroundColor||'';
+                var m=f.match(/(\d+),\s*(\d+),\s*(\d+)/);
+                if(m){
+                    var r=+m[1],g=+m[2],b=+m[3];
+                    if(r>245&&g>245&&b>245) continue;  // 흰색
+                    if(r<12&&g<12&&b<12) continue;     // 검정
+                    return [r,g,b];
+                }
             }
-            var m=s.match(/(\d+),\s*(\d+),\s*(\d+)/);
-            if(m) return [+m[1],+m[2],+m[3]];
             return null;
         }
-        function isValidColor(c){
-            if(!c) return false;
-            if(c[0]>240&&c[1]>240&&c[2]>240) return false; // 흰색 제외
-            if(c[0]<15&&c[1]<15&&c[2]<15) return false;    // 검정 제외
-            return true;
-        }
-        function getElemColor(el){
-            // 1) fill attribute (SVG)
-            var f=el.getAttribute('fill');
-            if(f){ var c=parseColor(f); if(isValidColor(c)) return c; }
-            // 2) computed style fill
-            try{
-                var cs=window.getComputedStyle(el);
-                var c=parseColor(cs.fill||'');
-                if(isValidColor(c)) return c;
-                c=parseColor(cs.backgroundColor||'');
-                if(isValidColor(c)) return c;
-            }catch(e){}
-            return null;
-        }
-        function getContainerColor(el){
-            // 자식 도형(path/polygon/rect/circle/ellipse)에서 색상 추출
-            var shapes=el.querySelectorAll('path,polygon,rect,circle,ellipse');
-            for(var s=0;s<shapes.length;s++){
-                var c=getElemColor(shapes[s]);
-                if(c) return c;
-            }
-            return getElemColor(el);
-        }
-
         var out=[], seen={};
-        // <a> 또는 <g> 컨테이너에서 숫자 텍스트 + 색상 추출
-        var containers=document.querySelectorAll('a,g');
-        for(var i=0;i<containers.length;i++){
-            var el=containers[i];
-            // 숫자 구역번호 탐색 (1~3자리)
-            var textEls=el.querySelectorAll('text,tspan');
-            var num=null;
-            for(var t=0;t<textEls.length;t++){
-                var tx=(textEls[t].textContent||'').trim();
-                if(/^\d{1,3}$/.test(tx)){ num=tx; break; }
-            }
-            if(!num) continue;
-            if(seen[num]) continue;
-            var color=getContainerColor(el);
-            seen[num]=1;
-            out.push({label:num, color:color});
-        }
-
-        // 폴백: 숫자 text/tspan 만 수집 (색상 null)
-        if(out.length===0){
-            var nodes=document.querySelectorAll('text,tspan');
-            for(var i=0;i<nodes.length;i++){
-                var tx=(nodes[i].textContent||'').trim();
-                if(/^\d{1,3}$/.test(tx)&&!seen[tx]){
-                    seen[tx]=1;
-                    out.push({label:tx, color:null});
+        var nodes=document.querySelectorAll('text,tspan,a,g,span,div,li');
+        for(var i=0;i<nodes.length;i++){
+            var t=(nodes[i].textContent||'').trim();
+            if(/^[A-Z가-힣]?\d{1,3}$/.test(t)||/^[A-Z가-힣]$/.test(t)){
+                if(!seen[t]){
+                    seen[t]=1;
+                    out.push({label:t, color:getFill(nodes[i])});
                 }
             }
         }
         return out;
         """
-        zones = self._run_zone_js(js)
-        if not zones:
-            try:
-                frames = drv.find_elements(By.TAG_NAME, "iframe")
-            except:
-                frames = []
-            for fr in frames:
-                try:
-                    drv.switch_to.default_content()
-                    drv.switch_to.frame(fr)
-                    zones = self._run_zone_js(js)
-                    if zones: break
-                except:
-                    pass
-            try: drv.switch_to.default_content()
-            except: pass
-
-        # 3) 폴백: "가001" 형식의 한글+숫자 라벨도 탐색
-        if not zones:
-            js_fallback = r"""
-            var out=[], seen={};
-            var nodes=document.querySelectorAll('text,tspan,span,div,a,g');
-            for(var i=0;i<nodes.length;i++){
-                var tx=(nodes[i].textContent||'').trim();
-                // "가001", "나002" 등: 끝에 숫자 2~3자리
-                var m=tx.match(/^[가-힣]?(\d{2,3})$/);
-                if(m&&!seen[m[1]]){
-                    seen[m[1]]=1;
-                    out.push({label:m[1], color:null});
-                }
-            }
-            return out;
-            """
-            zones = self._run_zone_js(js_fallback)
-
+        try: zones = drv.execute_script(js) or []
+        except: zones = []
         return self._dedup_zones(zones)
-
-    def _run_zone_js(self, js):
-        try: return self.driver.execute_script(js) or []
-        except: return []
 
     def _dedup_zones(self, items):
         seen, out = set(), []
@@ -596,39 +450,25 @@ class MacroThread(QThread):
                 seen.add(x); out.append(x)
         return out
 
-    @staticmethod
-    def _color_dist(c1, c2):
-        if not c1 or not c2: return 9999
-        return abs(c1[0]-c2[0]) + abs(c1[1]-c2[1]) + abs(c1[2]-c2[2])
-
-    # ── 구역 선택 (등급 색상으로 필터링) ─────
+    # ── 구역 선택 (등급 색상으로 필터링) ──────
     def _ask_zones(self, grade=None):
         all_zones = self._get_zones()
-        grade_color = (grade or {}).get('color')  # [r,g,b] 또는 None
-        grade_name  = (grade or {}).get('name', '')
+        grade_color = (grade or {}).get('color')
 
-        # 등급 색상과 일치하는 구역만 필터링 (색 거리 <= 60)
+        # 등급 색상이 있고, 구역에도 색상 정보가 있으면 필터링
         if grade_color and any(z.get('color') for z in all_zones):
-            COLOR_THRESH = 60
-            filtered = [z for z in all_zones
-                        if self._color_dist(z.get('color'), grade_color) <= COLOR_THRESH]
+            def _color_match(zc):
+                if not zc: return False
+                d = abs(zc[0]-grade_color[0]) + abs(zc[1]-grade_color[1]) + abs(zc[2]-grade_color[2])
+                return d <= 80
+            filtered = [z for z in all_zones if _color_match(z.get('color'))]
             if filtered:
-                # 구역 번호 오름차순 정렬
-                try:
-                    filtered.sort(key=lambda z: int(z['label']))
-                except: pass
-                self.log(f"[등급 필터] {grade_name} 구역 {len(filtered)}개")
+                self.log(f"[등급 필터] {grade['name']} 색상에 맞는 구역 {len(filtered)}개 표시")
                 zone_list = filtered
             else:
                 self.log("색상 필터링 결과 없음 → 전체 구역 표시")
-                try:
-                    all_zones.sort(key=lambda z: int(z['label']))
-                except: pass
                 zone_list = all_zones
         else:
-            try:
-                all_zones.sort(key=lambda z: int(z['label']))
-            except: pass
             zone_list = all_zones
 
         if not zone_list:
@@ -655,10 +495,14 @@ class MacroThread(QThread):
                 selected.append(part)
         return selected if selected else labels
 
-    # ── 예매 가능 좌석 목록 수집 ─────────────────
-    def _find_seat_candidates(self, target):
+    # ── 좌석 클릭 ─────────────────────────────
+    # grade: {'name','color':[r,g,b]} 또는 None(모두)
+    def _click_seat(self, grade=None):
+        drv = self.driver
+        target = (grade or {}).get("color")  # [r,g,b] 또는 None
+
         js = r"""
-        var target = arguments[0];
+        var target = arguments[0];   // [r,g,b] 또는 null
         function parseColor(s){
             if(!s||s==='none'||s==='transparent') return null;
             var m=s.match(/(\d+),\s*(\d+),\s*(\d+)/);
@@ -674,12 +518,16 @@ class MacroThread(QThread):
         function getRGB(el){
             try {
                 var cs = window.getComputedStyle(el);
+                // 1) SVG fill attribute
                 var r = parseColor(el.getAttribute('fill')||'');
                 if(r) return r;
+                // 2) CSS fill (SVG)
                 r = parseColor(cs.fill||'');
                 if(r) return r;
+                // 3) background-color (td/div 등 일반 요소)
                 r = parseColor(cs.backgroundColor||'');
                 if(r) return r;
+                // 4) inline style backgroundColor
                 r = parseColor((el.style&&el.style.backgroundColor)||'');
                 if(r) return r;
             } catch(e){}
@@ -690,9 +538,10 @@ class MacroThread(QThread):
         }
         function matchColor(rgb){
             if(!rgb) return false;
-            if(isGray(rgb.r,rgb.g,rgb.b)) return false;
-            if(rgb.r>245&&rgb.g>245&&rgb.b>245) return false;
-            if(!target) return true;
+            if(isGray(rgb.r,rgb.g,rgb.b)) return false;   // 회색=매진 제외
+            if(rgb.r>245&&rgb.g>245&&rgb.b>245) return false; // 흰색 제외
+            if(!target) return true;                       // 모두: 색 있는 좌석
+            // 선택한 등급 색상과의 거리
             var d=Math.abs(rgb.r-target[0])+Math.abs(rgb.g-target[1])+
                   Math.abs(rgb.b-target[2]);
             return d<=70;
@@ -706,147 +555,45 @@ class MacroThread(QThread):
         }
         var seats = document.querySelectorAll(
             'rect[fill], circle[fill], path[fill], rect[class], circle[class],' +
-            'td, td[bgcolor], td[style], div[style*="background"], rect, circle, span[style]');
+            'td, td[bgcolor], td[style], div[style*="background"],' +
+            'rect, circle');
         var cands = [];
         for(var i=0;i<seats.length;i++){
             var el=seats[i];
             if(el.getAttribute && el.getAttribute('aria-disabled')==='true') continue;
             if(isSoldByClass(el)) continue;
             var bnd=el.getBoundingClientRect?el.getBoundingClientRect():null;
-            if(!bnd||bnd.width<4||bnd.height<4) continue;
-            // 행 레이블처럼 가로로 긴 요소 제외 (좌석은 거의 정사각형에 가까움)
-            if(bnd.width>80) continue;
-            // 텍스트가 긴 요소 제외 (좌석 번호는 짧거나 없음)
-            var txt=(el.textContent||'').trim();
-            if(txt.length>4) continue;
+            if(!bnd||bnd.width<3||bnd.height<3) continue;
             if(!matchColor(getRGB(el))) continue;
             cands.push(el);
+        }
+        if(cands.length===0) return 0;
+        var picked=cands[0];
+        try { picked.click(); } catch(e){
+            picked.dispatchEvent(new MouseEvent('click',
+                {bubbles:true,cancelable:true,view:window}));
         }
         return cands.length;
         """
         try:
-            return self.driver.execute_script(js, target) or 0
-        except:
-            return 0
-
-    # ── 좌석 클릭 (인덱스 지정) ─────────────────
-    def _click_seat_at(self, target, idx):
-        js = r"""
-        var target = arguments[0];
-        var idx    = arguments[1];
-        function parseColor(s){
-            if(!s||s==='none'||s==='transparent') return null;
-            var m=s.match(/(\d+),\s*(\d+),\s*(\d+)/);
-            if(m) return {r:+m[1],g:+m[2],b:+m[3]};
-            var h=s.replace(/^#/,'');
-            if(h.length===3) h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
-            if(h.length===6) return {
-                r:parseInt(h.slice(0,2),16),
-                g:parseInt(h.slice(2,4),16),
-                b:parseInt(h.slice(4,6),16)};
-            return null;
-        }
-        function getRGB(el){
-            try {
-                var cs=window.getComputedStyle(el);
-                var r=parseColor(el.getAttribute('fill')||''); if(r) return r;
-                r=parseColor(cs.fill||''); if(r) return r;
-                r=parseColor(cs.backgroundColor||''); if(r) return r;
-                r=parseColor((el.style&&el.style.backgroundColor)||''); if(r) return r;
-            } catch(e){}
-            return null;
-        }
-        function isGray(r,g,b){ return Math.max(r,g,b)-Math.min(r,g,b)<28&&Math.min(r,g,b)>110; }
-        function matchColor(rgb){
-            if(!rgb) return false;
-            if(isGray(rgb.r,rgb.g,rgb.b)) return false;
-            if(rgb.r>245&&rgb.g>245&&rgb.b>245) return false;
-            if(!target) return true;
-            return Math.abs(rgb.r-target[0])+Math.abs(rgb.g-target[1])+Math.abs(rgb.b-target[2])<=70;
-        }
-        function isSoldByClass(el){
-            var c=(el.className&&el.className.baseVal!==undefined)?el.className.baseVal:(el.className||'');
-            c=(''+c).toLowerCase();
-            return c.indexOf('sold')>=0||c.indexOf('disable')>=0||c.indexOf('reserved')>=0||c.indexOf('unavailab')>=0;
-        }
-        var seats=document.querySelectorAll(
-            'rect[fill],circle[fill],path[fill],rect[class],circle[class],' +
-            'td,td[bgcolor],td[style],div[style*="background"],rect,circle,span[style]');
-        var cands=[];
-        for(var i=0;i<seats.length;i++){
-            var el=seats[i];
-            if(el.getAttribute&&el.getAttribute('aria-disabled')==='true') continue;
-            if(isSoldByClass(el)) continue;
-            var bnd=el.getBoundingClientRect?el.getBoundingClientRect():null;
-            if(!bnd||bnd.width<4||bnd.height<4) continue;
-            if(bnd.width>80) continue;
-            var txt=(el.textContent||'').trim();
-            if(txt.length>4) continue;
-            if(!matchColor(getRGB(el))) continue;
-            cands.push(el);
-        }
-        if(idx>=cands.length) return false;
-        var el=cands[idx];
-        try{ el.click(); }catch(e){
-            el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));
-        }
-        return true;
-        """
-        try:
-            return bool(self.driver.execute_script(js, target, idx))
-        except:
-            return False
-
-    # ── 등급 섹션 펼치기 ─────────────────────────
-    # 잔여좌석보기 패널에서 선택한 등급 행을 클릭해 좌석 목록을 펼친다.
-    def _expand_grade_section(self, grade_name):
-        js = r"""
-        var name = arguments[0];
-        var nodes = document.querySelectorAll('*');
-        for (var i=0; i<nodes.length; i++){
-            var el = nodes[i];
-            var txt = (el.textContent||'').trim();
-            if (txt !== name && txt.indexOf(name) !== 0) continue;
-            var bnd = el.getBoundingClientRect();
-            if (bnd.width < 20 || bnd.height < 10) continue;
-            // 자식 개수가 적을수록 섹션 헤더에 가까움
-            if (el.querySelectorAll('*').length > 30) continue;
-            el.click(); return true;
-        }
-        return false;
-        """
-        try: self.driver.execute_script(js, grade_name)
-        except: pass
-
-    # ── 좌석 클릭 ─────────────────────────────
-    # 잔여좌석보기 패널에서 선택 등급 섹션을 펼친 뒤 좌석을 순서대로 시도.
-    def _click_seat(self, grade=None):
-        target = (grade or {}).get("color")
-        gname  = (grade or {}).get("name", "모두")
-
-        # 선택 등급 섹션 펼치기 (접혀있으면 클릭)
-        if gname and gname != "모두":
-            self._expand_grade_section(gname)
-            self._wait(0.6)
-
-        total = self._find_seat_candidates(target)
-        if total == 0:
-            return False
-
-        self.log(f"[{gname}] 예매 가능 좌석 {total}개 발견 → 순서대로 시도")
-        for idx in range(total):
-            if not self._click_seat_at(target, idx):
-                break
-            self._wait(1.0)
-            src = self._src()
-            if "티켓가격선택" in src or "총" in src:
-                self._close_seat_panel()
-                return True
-            self._wait(0.5)
-            src = self._src()
-            if "티켓가격선택" in src or "총" in src:
-                self._close_seat_panel()
-                return True
+            n = drv.execute_script(js, target)
+            if n and n > 0:
+                gname = (grade or {}).get("name", "모두")
+                self.log(f"[{gname}] 예매 가능 좌석 발견 → 클릭 (후보 {n}개)")
+                self._wait(1.2)
+                # 하단에 좌석 선택 정보(티켓가격선택/총 N매)가 나타났는지 확인
+                if "티켓가격선택" in self._src() or "총" in self._src():
+                    self._close_price_panel()   # 가격표 숨김
+                    self._hide_view_tabs()      # 잔여좌석보기 탭 숨김
+                    return True
+                self._wait(0.8)
+                if "티켓가격선택" in self._src() or "총" in self._src():
+                    self._close_price_panel()
+                    self._hide_view_tabs()
+                    return True
+                return False
+        except Exception as e:
+            self.log(f"좌석 클릭 오류: {str(e)[:80]}")
         return False
 
     # ── 퍼즐 슬라이더 ─────────────────────────
@@ -961,48 +708,35 @@ class MacroThread(QThread):
             return False
 
     # ── 구역 순회 ─────────────────────────────
-    # 흐름: 구역 클릭 → 잔여좌석보기 → 등급 섹션 펼치기 → 좌석 클릭
-    #       성공: 티켓가격선택 / 실패: 좌석닫기 후 다음 구역 클릭
     def _rotate_zones(self, zones, grade=None):
-        self.log(f"구역 순회 시작 (딜레이 {self.delay}초)")
         cycle = 0
         consecutive_err = 0
-
+        self.log(f"구역 순회를 시작합니다 (딜레이 {self.delay}초)")
         while True:
             for zone in zones:
                 self._wait(0)
-
+                # 브라우저 세션 생존 확인
                 try:
                     _ = self.driver.current_url
                 except Exception:
                     self.log("브라우저가 종료되어 순회를 중단합니다."); return
 
                 try:
+                    # 구역번호 정규화: "가(001)"→"001", "206영역"→"206", "105구역"→"105"
                     zone_num = zone.replace("구역", "").replace("영역", "").strip()
                     if "(" in zone_num:
                         zone_num = zone_num.split("(")[-1].replace(")", "").strip()
 
-                    # ① 구역 클릭 (지도 또는 현재 페이지에서)
+                    # 구역 클릭 (실패해도 다음 구역으로)
                     if not self._click_zone(zone_num):
-                        self.log(f"구역 {zone_num} 클릭 실패 → 건너뜀")
                         continue
 
-                    # ② 로딩 대기 + 퍼즐 처리
                     self._wait(self.delay)
                     self._solve_puzzle()
 
-                    # ③ 잔여좌석보기 클릭 → 등급별 좌석 패널 열기
-                    self._click_text_button(["잔여좌석보기"])
-                    self._wait(0.8)
-
-                    # ④ 좌석 클릭 시도 (등급 섹션 펼치기 포함)
+                    # 예매 가능 좌석 클릭 → 성공하면 순회 종료
                     if self._click_seat(grade):
-                        self._click_complete()
                         return
-
-                    # ⑤ 빈 좌석 없음 → 좌석닫기 후 다음 구역으로
-                    self._click_text_button(["좌석닫기"])
-                    self._wait(0.4)
                     consecutive_err = 0
 
                 except InterruptedError:
@@ -1012,13 +746,10 @@ class MacroThread(QThread):
                     self.log(f"구역 오류(건너뜀): {str(e)[:60]}")
                     if consecutive_err >= 15:
                         self.log("오류가 계속되어 순회를 중단합니다."); return
-                    try: self._click_text_button(["좌석닫기"])
-                    except: pass
                     self._wait(0.5)
-
             cycle += 1
             if cycle % 5 == 0:
-                self.log(f"순회 {cycle}바퀴 완료...")
+                self.log(f"구역 순회 {cycle}바퀴 완료...")
 
     # ── 티켓가격선택 클릭 ────────────────────
     def _click_complete(self):
@@ -1162,9 +893,13 @@ class MacroThread(QThread):
                 self.log("로그인 대기 시간 초과"); return
             self.log("→ 로그인 완료")
 
-            # 로그인 후 아직 accounts 도메인에 있으면 NOL 메인으로 1회 이동
-            cur = self._url()
-            if "nol.yanolja.com" not in cur and "nol.interpark.com" not in cur:
+            # 로그인 후 accounts.yanolja.com/myaccount 등으로 가있으면
+            # NOL 메인(nol.yanolja.com)으로 확실히 도달할 때까지 반복 이동
+            for _try in range(6):
+                cur = self._url()
+                # 이미 NOL 메인/티켓 도메인이면 종료
+                if "nol.yanolja.com" in cur or "nol.interpark.com" in cur:
+                    break
                 try:
                     self.log("→ NOL 메인(nol.yanolja.com)으로 이동")
                     self.driver.get("https://nol.yanolja.com/")
@@ -1186,19 +921,25 @@ class MacroThread(QThread):
                 self._handle_captcha()
                 self._wait(1)
 
-            # ④ 좌석 등급 선택 (페이지에서 동적으로 읽어 사용자에게 표시)
+            # 잔여좌석보기/좌석가격보기 탭 미리 숨김
+            self._hide_view_tabs()
+
+            # ④ 좌석 등급 선택 (페이지에서 동적으로 읽음)
             grade, grade_list = self._ask_grade()
             self._wait(0.3)
 
-            # ⑤ 구역 선택 (선택한 등급 색상과 일치하는 구역만 표시)
+            # ⑤ 구역 선택 (선택한 등급 색상으로 필터링)
             zones = self._ask_zones(grade)
             self.log(f"선택 구역: {', '.join(zones) if zones else '전체'}")
             self._wait(0.3)
 
-            # ⑥ 구역 순회 + 좌석 클릭 + 티켓가격선택 (_rotate_zones 내부에서 처리)
+            # ⑥ 구역 순회 + 좌석 클릭
             self._rotate_zones(zones, grade)
 
-            # ⑦ 결제 페이지 진입 대기 (가격/할인선택 단계)
+            # ⑦ 좌석선택완료
+            self._click_complete()
+
+            # ⑦-② 결제 페이지 진입 대기 (가격/할인선택 단계)
             self.log("결제 페이지 진입 대기 중...")
             for _ in range(60):
                 self._wait(1)
