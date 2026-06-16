@@ -312,39 +312,66 @@ class MacroThread(QThread):
             except: pass
         return False
 
-    # ── 구역 목록 동적 읽기 ──────────────────
+    # ── 구역 목록 동적 읽기 (label + color) ─────
+    # 반환: [{'label': '101', 'color': [r,g,b] or None}, ...]
     def _get_zones(self):
         drv = self.driver
         zones = []
-        # 1) BookMain.asp (iframe) - area 태그 title/alt
+        # 1) BookMain.asp (iframe) - area 태그 title/alt (색상 없음)
         try:
             drv.switch_to.default_content()
             self._to_frame("ifrmSeat", "mainFrame")
             for a in drv.find_elements(By.TAG_NAME, "area"):
                 t = (a.get_attribute("title") or a.get_attribute("alt") or "").strip()
-                if t: zones.append(t)
+                if t: zones.append({'label': t, 'color': None})
             drv.switch_to.default_content()
         except:
             try: drv.switch_to.default_content()
             except: pass
         if zones:
-            return self._dedup(zones)
-        # 2) motickets (SVG/텍스트) - 구역 번호 텍스트
+            return self._dedup_zones(zones)
+        # 2) motickets (SVG) - 구역 번호 텍스트 + 부모 fill 색상
         js = r"""
+        function getFill(el){
+            for(var d=0,e=el;d<8&&e;d++,e=e.parentElement){
+                var cs=window.getComputedStyle(e);
+                var f=cs.fill||e.getAttribute('fill')||'';
+                if(!f&&e.style) f=e.style.fill||e.style.backgroundColor||'';
+                if(!f) f=cs.backgroundColor||'';
+                var m=f.match(/(\d+),\s*(\d+),\s*(\d+)/);
+                if(m){
+                    var r=+m[1],g=+m[2],b=+m[3];
+                    if(r>245&&g>245&&b>245) continue;  // 흰색
+                    if(r<12&&g<12&&b<12) continue;     // 검정
+                    return [r,g,b];
+                }
+            }
+            return null;
+        }
         var out=[], seen={};
         var nodes=document.querySelectorAll('text,tspan,a,g,span,div,li');
         for(var i=0;i<nodes.length;i++){
             var t=(nodes[i].textContent||'').trim();
-            // "001","105","가","A","224" 등 짧은 구역 라벨
-            if(/^[A-Z가-힣]?\d{1,3}$/.test(t) || /^[A-Z가-힣]$/.test(t)){
-                if(!seen[t]){ seen[t]=1; out.push(t); }
+            if(/^[A-Z가-힣]?\d{1,3}$/.test(t)||/^[A-Z가-힣]$/.test(t)){
+                if(!seen[t]){
+                    seen[t]=1;
+                    out.push({label:t, color:getFill(nodes[i])});
+                }
             }
         }
         return out;
         """
         try: zones = drv.execute_script(js) or []
         except: zones = []
-        return self._dedup(zones)
+        return self._dedup_zones(zones)
+
+    def _dedup_zones(self, items):
+        seen, out = set(), []
+        for x in items:
+            lbl = x.get('label', '')
+            if lbl and lbl not in seen:
+                seen.add(lbl); out.append(x)
+        return out
 
     def _dedup(self, items):
         seen, out = set(), []
@@ -353,17 +380,36 @@ class MacroThread(QThread):
                 seen.add(x); out.append(x)
         return out
 
-    # ── 구역 선택 ────────────────────────────
-    def _ask_zones(self):
-        zone_list = self._get_zones()
+    # ── 구역 선택 (등급 색상으로 필터링) ──────
+    def _ask_zones(self, grade=None):
+        all_zones = self._get_zones()
+        grade_color = (grade or {}).get('color')
+
+        # 등급 색상이 있고, 구역에도 색상 정보가 있으면 필터링
+        if grade_color and any(z.get('color') for z in all_zones):
+            def _color_match(zc):
+                if not zc: return False
+                d = abs(zc[0]-grade_color[0]) + abs(zc[1]-grade_color[1]) + abs(zc[2]-grade_color[2])
+                return d <= 80
+            filtered = [z for z in all_zones if _color_match(z.get('color'))]
+            if filtered:
+                self.log(f"[등급 필터] {grade['name']} 색상에 맞는 구역 {len(filtered)}개 표시")
+                zone_list = filtered
+            else:
+                self.log("색상 필터링 결과 없음 → 전체 구역 표시")
+                zone_list = all_zones
+        else:
+            zone_list = all_zones
+
         if not zone_list:
             self.log("구역 목록을 읽지 못했습니다. 직접 입력하세요 (예: 105,106)")
         else:
             for i, z in enumerate(zone_list, 1):
-                self.log(f"{i}. {z}")
+                self.log(f"{i}. {z['label']}")
         self.log("구역을 번호로 입력해주세요. ','로 구분하여 여러개 입력 가능합니다.")
         ans = self._ask(timeout=120)
-        if not ans: return zone_list
+        labels = [z['label'] for z in zone_list]
+        if not ans: return labels
         self.log(f"→ {ans}")
         selected = []
         for part in ans.split(","):
@@ -372,12 +418,12 @@ class MacroThread(QThread):
             try:
                 idx = int(part) - 1
                 if 0 <= idx < len(zone_list):
-                    selected.append(zone_list[idx])
+                    selected.append(zone_list[idx]['label'])
                 else:
-                    selected.append(part)   # 범위 밖 → 직접 입력으로 간주
+                    selected.append(part)
             except:
                 selected.append(part)
-        return selected if selected else zone_list
+        return selected if selected else labels
 
     # ── 좌석 클릭 ─────────────────────────────
     # grade: {'name','color':[r,g,b]} 또는 None(모두)
@@ -726,8 +772,8 @@ class MacroThread(QThread):
             grade, grade_list = self._ask_grade()
             self._wait(0.3)
 
-            # ⑤ 구역 선택 (페이지에서 동적으로 읽음)
-            zones = self._ask_zones()
+            # ⑤ 구역 선택 (선택한 등급 색상으로 필터링)
+            zones = self._ask_zones(grade)
             self.log(f"선택 구역: {', '.join(zones) if zones else '전체'}")
             self._wait(0.3)
 
