@@ -433,18 +433,33 @@ class MacroThread(QThread):
 
         js = r"""
         var target = arguments[0];   // [r,g,b] 또는 null
+        function parseColor(s){
+            if(!s||s==='none'||s==='transparent') return null;
+            var m=s.match(/(\d+),\s*(\d+),\s*(\d+)/);
+            if(m) return {r:+m[1],g:+m[2],b:+m[3]};
+            var h=s.replace(/^#/,'');
+            if(h.length===3) h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+            if(h.length===6) return {
+                r:parseInt(h.slice(0,2),16),
+                g:parseInt(h.slice(2,4),16),
+                b:parseInt(h.slice(4,6),16)};
+            return null;
+        }
         function getRGB(el){
             try {
                 var cs = window.getComputedStyle(el);
-                var f = cs.fill || el.getAttribute('fill') || '';
-                var m = f.match(/(\d+),\s*(\d+),\s*(\d+)/);
-                if(m) return {r:+m[1],g:+m[2],b:+m[3]};
-                var h=f.replace('#','');
-                if(h.length===3) h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
-                if(h.length===6) return {
-                    r:parseInt(h.slice(0,2),16),
-                    g:parseInt(h.slice(2,4),16),
-                    b:parseInt(h.slice(4,6),16)};
+                // 1) SVG fill attribute
+                var r = parseColor(el.getAttribute('fill')||'');
+                if(r) return r;
+                // 2) CSS fill (SVG)
+                r = parseColor(cs.fill||'');
+                if(r) return r;
+                // 3) background-color (td/div 등 일반 요소)
+                r = parseColor(cs.backgroundColor||'');
+                if(r) return r;
+                // 4) inline style backgroundColor
+                r = parseColor((el.style&&el.style.backgroundColor)||'');
+                if(r) return r;
             } catch(e){}
             return null;
         }
@@ -469,7 +484,9 @@ class MacroThread(QThread):
                    c.indexOf('reserved')>=0||c.indexOf('unavailab')>=0;
         }
         var seats = document.querySelectorAll(
-            'rect[fill], circle[fill], path[fill], rect[class], circle[class], td');
+            'rect[fill], circle[fill], path[fill], rect[class], circle[class],' +
+            'td, td[bgcolor], td[style], div[style*="background"],' +
+            'rect, circle');
         var cands = [];
         for(var i=0;i<seats.length;i++){
             var el=seats[i];
